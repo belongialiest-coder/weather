@@ -81,6 +81,12 @@ def get_weather_alarms(api_key, city):
         try:
             logging.info(f"正在获取气象预警信息... (尝试 {attempt + 1}/{API_CONFIG['max_retries']})")
             response = requests.get(url, params=params, timeout=API_CONFIG["timeout"])
+
+            # 特殊处理404错误（城市不存在）
+            if response.status_code == 404:
+                logging.warning(f"城市 {city} 未找到（404），跳过该城市")
+                return None
+
             response.raise_for_status()
             data = response.json()
 
@@ -100,15 +106,22 @@ def get_weather_alarms(api_key, city):
             logging.warning(f"请求超时 (尝试 {attempt + 1}/{API_CONFIG['max_retries']})")
             if attempt < API_CONFIG["max_retries"] - 1:
                 time.sleep(API_CONFIG["initial_delay"])
+        except requests.exceptions.HTTPError as e:
+            # 4xx客户端错误（如404）跳过，5xx服务器错误重试
+            if 400 <= e.response.status_code < 500:
+                logging.warning(f"客户端错误 {e.response.status_code}，跳过城市 {city}")
+                return None
+            else:
+                logging.error(f"服务器错误: {e}")
+                if attempt < API_CONFIG["max_retries"] - 1:
+                    time.sleep(API_CONFIG["initial_delay"])
         except requests.exceptions.RequestException as e:
             logging.error(f"API请求失败: {e}")
             if attempt < API_CONFIG["max_retries"] - 1:
                 time.sleep(API_CONFIG["initial_delay"])
-            else:
-                sys.exit(1)
 
-    logging.error("达到最大重试次数")
-    sys.exit(1)
+    logging.warning(f"城市 {city} 达到最大重试次数，跳过")
+    return None
 
 
 def extract_alarms(data):
@@ -367,6 +380,8 @@ def main():
     cities_data = []
     total_alarms_before_filter = 0
     total_alarms_after_filter = 0
+    success_count = 0
+    failed_count = 0
 
     # 逐个城市查询预警
     for idx, city in enumerate(cities, 1):
@@ -377,6 +392,7 @@ def main():
 
         if data is None:
             logging.warning(f"城市 {city} 查询失败，跳过")
+            failed_count += 1
             # 添加延迟避免API超载
             time.sleep(0.8)
             continue
@@ -386,12 +402,14 @@ def main():
 
         if location is None:
             logging.warning(f"城市 {city} 数据解析失败，跳过")
+            failed_count += 1
             # 添加延迟避免API超载
             time.sleep(0.8)
             continue
 
         city_name = location.get('name', city)
         total_alarms_before_filter += len(alarms)
+        success_count += 1
 
         # 过滤预警类型
         if alert_types and alarms:
@@ -421,7 +439,9 @@ def main():
     # 汇总统计
     logging.info("\n" + "=" * 50)
     logging.info(f"查询完成！")
-    logging.info(f"监控城市: {len(cities_data)} 个")
+    logging.info(f"总城市数: {len(cities)} 个")
+    logging.info(f"查询成功: {success_count} 个")
+    logging.info(f"查询失败: {failed_count} 个")
     logging.info(f"总预警数（过滤前）: {total_alarms_before_filter} 条")
     logging.info(f"总预警数（过滤后）: {total_alarms_after_filter} 条")
     logging.info(f"过滤掉: {total_alarms_before_filter - total_alarms_after_filter} 条不相关预警")
