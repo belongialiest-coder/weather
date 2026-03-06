@@ -85,22 +85,10 @@
             align-items: center;
         }
 
-        .china-map-wrapper {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-
-        .china-map-svg {
+        .china-map-echarts {
             width: 100%;
-            max-width: 600px;
-            height: auto;
-            filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.1));
-        }
-
-        .china-map-svg text {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            height: 500px;
+            min-height: 400px;
         }
 
         .map-legend {
@@ -281,12 +269,9 @@
                 font-size: 1.2rem;
             }
 
-            .china-map-wrapper {
-                padding: 10px;
-            }
-
-            .china-map-svg {
-                max-width: 100%;
+            .china-map-echarts {
+                height: 350px;
+                min-height: 300px;
             }
         }
     </style>
@@ -306,39 +291,7 @@
         <div class="map-overview">
             <h2>📍 预警地区分布</h2>
             <div class="map-container">
-                <div class="china-map-wrapper">
-                    <svg viewBox="0 0 800 600" class="china-map-svg" xmlns="http://www.w3.org/2000/svg">
-                        <!-- 中国地图轮廓 - 更真实的形状 -->
-                        <path d="M 150 180 L 160 150 L 170 130 L 190 110 L 210 100 L 240 95 L 270 95 L 300 100 L 330 110 L 360 125 L 385 140 L 410 160 L 430 180 L 450 200 L 470 225 L 485 250 L 500 280 L 510 310 L 515 340 L 515 370 L 510 400 L 500 425 L 485 450 L 465 470 L 440 485 L 410 495 L 380 500 L 350 500 L 320 495 L 290 485 L 265 470 L 240 450 L 220 425 L 205 400 L 195 375 L 188 350 L 185 325 L 183 300 L 180 275 L 175 250 L 168 225 L 160 205 L 150 180 M 520 310 L 540 320 L 555 330 L 565 345 L 570 365 L 565 385 L 555 400 L 540 410 L 525 415 L 515 405 M 185 325 L 175 310 L 170 295 L 168 280 M 385 140 L 400 135 L 415 135 L 428 138 M 240 450 L 235 465 L 235 480 L 240 495 M 465 470 L 475 475 L 485 475 L 493 473"
-                              fill="#e0f2ff"
-                              stroke="#3b82f6"
-                              stroke-width="2"/>
-
-                        <!-- 城市标记 -->
-                        {% if has_alarms %}
-                        <!-- 有预警时的标记 - 使用预警颜色 -->
-                        <g class="city-marker-group">
-                            <!-- 脉冲圆圈 -->
-                            <circle class="pulse-circle" cx="{{ city_x }}" cy="{{ city_y }}" r="20" fill="{{ alarms[0].color }}" opacity="0.3">
-                                <animate attributeName="r" values="20;35;20" dur="2s" repeatCount="indefinite"/>
-                                <animate attributeName="opacity" values="0.3;0;0.3" dur="2s" repeatCount="indefinite"/>
-                            </circle>
-                            <!-- 标记点 -->
-                            <circle cx="{{ city_x }}" cy="{{ city_y }}" r="12" fill="{{ alarms[0].color }}" stroke="white" stroke-width="3"/>
-                            <!-- 城市名称 -->
-                            <text x="{{ city_x }}" y="{{ city_y + 30 }}" text-anchor="middle" font-size="16" fill="#1e293b" font-weight="bold">{{ location.name }}</text>
-                            <text x="{{ city_x }}" y="{{ city_y + 48 }}" text-anchor="middle" font-size="14" fill="#64748b">⚠️ {{ alarms|length }} 条预警</text>
-                        </g>
-                        {% else %}
-                        <!-- 无预警时的标记 - 绿色 -->
-                        <g class="city-marker-group">
-                            <circle cx="{{ city_x }}" cy="{{ city_y }}" r="10" fill="#48bb78" stroke="white" stroke-width="3"/>
-                            <text x="{{ city_x }}" y="{{ city_y + 28 }}" text-anchor="middle" font-size="16" fill="#1e293b" font-weight="bold">{{ location.name }}</text>
-                            <text x="{{ city_x }}" y="{{ city_y + 46 }}" text-anchor="middle" font-size="14" fill="#10b981">✅ 无预警</text>
-                        </g>
-                        {% endif %}
-                    </svg>
-                </div>
+                <div id="chinaMap" class="china-map-echarts"></div>
                 <div class="map-legend">
                     <h3>预警图例</h3>
                     <div class="legend-items">
@@ -366,6 +319,175 @@
                 </div>
             </div>
         </div>
+
+        <!-- ECharts 库 -->
+        <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+        <script>
+            // 初始化地图
+            const chartDom = document.getElementById('chinaMap');
+            const myChart = echarts.init(chartDom);
+
+            // 城市坐标数据（主要城市）
+            const cityCoords = {
+                '北京': [116.4074, 39.9042],
+                '上海': [121.4737, 31.2304],
+                '广州': [113.2644, 23.1291],
+                '深圳': [114.0579, 22.5431],
+                '成都': [104.0668, 30.5728],
+                '杭州': [120.1551, 30.2741],
+                '重庆': [106.9123, 29.4316],
+                '西安': [108.9398, 34.3416],
+                '苏州': [120.5853, 31.2989],
+                '武汉': [114.3055, 30.5928],
+                '天津': [117.3616, 39.3434],
+                '南京': [118.7969, 32.0603],
+                '长沙': [112.9388, 28.2282],
+                '郑州': [113.6253, 34.7466],
+                '沈阳': [123.4315, 41.8057],
+                '青岛': [120.3826, 36.0671],
+                '济南': [117.1206, 36.6512],
+                '哈尔滨': [126.5340, 45.8038],
+                '昆明': [102.7123, 25.0406],
+                '厦门': [118.0894, 24.4798]
+            };
+
+            // 预警等级颜色映射
+            const levelColors = {
+                '红色': '#FF4444',
+                '橙色': '#FF8800',
+                '黄色': '#FFCC00',
+                '蓝色': '#4488FF',
+                '无预警': '#48bb78'
+            };
+
+            // 预警等级对应的散点大小
+            const levelSizes = {
+                '红色': 30,
+                '橙色': 25,
+                '黄色': 20,
+                '蓝色': 15,
+                '无预警': 12
+            };
+
+            // 构建城市预警数据
+            const cityName = '{{ location.name }}';
+            const hasAlarms = {{ 'true' if has_alarms else 'false' }};
+            const alarmCount = {{ alarms|length }};
+
+            let warningLevel = '无预警';
+            {% if has_alarms %}
+            const alarmLevel = '{{ alarms[0].level if alarms else "" }}';
+            if (alarmLevel.includes('红色')) warningLevel = '红色';
+            else if (alarmLevel.includes('橙色')) warningLevel = '橙色';
+            else if (alarmLevel.includes('黄色')) warningLevel = '黄色';
+            else if (alarmLevel.includes('蓝色')) warningLevel = '蓝色';
+            {% endif %}
+
+            const warningCities = [{
+                name: cityName,
+                value: cityCoords[cityName] || [116.4074, 39.9042],
+                level: warningLevel,
+                count: alarmCount,
+                itemStyle: {
+                    color: levelColors[warningLevel]
+                }
+            }];
+
+            // 加载中国地图并渲染
+            fetch('https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json')
+                .then(response => response.json())
+                .then(geoJson => {
+                    // 注册地图
+                    echarts.registerMap('china', geoJson);
+
+                    // 配置项
+                    const option = {
+                        backgroundColor: 'transparent',
+                        tooltip: {
+                            trigger: 'item',
+                            formatter: function(params) {
+                                if (params.componentSubType === 'effectScatter') {
+                                    return `<strong>${params.data.name}</strong><br/>` +
+                                           `预警级别: ${params.data.level}<br/>` +
+                                           `预警数量: ${params.data.count} 条`;
+                                }
+                                return params.name;
+                            },
+                            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                            borderColor: '#ccc',
+                            borderWidth: 1,
+                            textStyle: {
+                                color: '#333'
+                            }
+                        },
+                        geo: {
+                            map: 'china',
+                            roam: false,
+                            label: {
+                                show: false
+                            },
+                            itemStyle: {
+                                areaColor: '#e0f2ff',
+                                borderColor: '#3b82f6',
+                                borderWidth: 1.5
+                            },
+                            emphasis: {
+                                itemStyle: {
+                                    areaColor: '#bfdbfe'
+                                }
+                            }
+                        },
+                        series: [
+                            {
+                                type: hasAlarms ? 'effectScatter' : 'scatter',
+                                coordinateSystem: 'geo',
+                                data: warningCities,
+                                symbolSize: function(val) {
+                                    const level = warningCities.find(c => c.value === val)?.level || '无预警';
+                                    return levelSizes[level];
+                                },
+                                showEffectOn: 'render',
+                                rippleEffect: {
+                                    brushType: 'stroke',
+                                    scale: 3,
+                                    period: 4
+                                },
+                                label: {
+                                    formatter: '{b}',
+                                    position: 'bottom',
+                                    show: true,
+                                    fontSize: 14,
+                                    fontWeight: 'bold',
+                                    color: '#1e293b'
+                                },
+                                itemStyle: {
+                                    shadowBlur: 10,
+                                    shadowColor: 'rgba(0, 0, 0, 0.3)',
+                                    borderColor: '#fff',
+                                    borderWidth: 2
+                                },
+                                emphasis: {
+                                    scale: true,
+                                    scaleSize: 15
+                                },
+                                zlevel: 1
+                            }
+                        ]
+                    };
+
+                    // 渲染图表
+                    myChart.setOption(option);
+
+                    // 响应式调整
+                    window.addEventListener('resize', function() {
+                        myChart.resize();
+                    });
+                })
+                .catch(error => {
+                    console.error('地图加载失败:', error);
+                    chartDom.innerHTML = '<div style="text-align:center;padding:50px;color:#999;">地图加载失败，请刷新页面重试</div>';
+                });
+        </script>
 
         {% if has_alarms %}
         <div class="alarms-container">
