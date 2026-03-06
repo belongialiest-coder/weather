@@ -142,13 +142,43 @@ def render_html(location, alarms, template_path='template.html', output_path='in
     for alarm in alarms:
         alarm['color'] = get_alert_color(alarm.get('level', ''))
 
+    # 城市在 SVG 地图上的坐标映射（基于 800x600 的 viewBox）
+    city_coords = {
+        '北京': (430, 180),
+        '上海': (530, 340),
+        '广州': (460, 480),
+        '深圳': (465, 500),
+        '成都': (320, 360),
+        '杭州': (520, 360),
+        '重庆': (340, 380),
+        '西安': (360, 280),
+        '苏州': (525, 345),
+        '武汉': (440, 360),
+        '天津': (440, 190),
+        '南京': (500, 340),
+        '长沙': (440, 400),
+        '郑州': (420, 300),
+        '沈阳': (480, 140),
+        '青岛': (480, 270),
+        '济南': (455, 265),
+        '哈尔滨': (490, 100),
+        '昆明': (300, 450),
+        '厦门': (490, 440)
+    }
+
+    # 获取城市坐标，默认使用北京
+    city_name = location.get('name', '北京')
+    city_x, city_y = city_coords.get(city_name, (430, 180))
+
     # 渲染模板
     template = Template(template_content)
     html_content = template.render(
         location=location,
         alarms=alarms,
         update_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        has_alarms=len(alarms) > 0
+        has_alarms=len(alarms) > 0,
+        city_x=city_x,
+        city_y=city_y
     )
 
     # 写入文件
