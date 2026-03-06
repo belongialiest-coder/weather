@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from jinja2 import Template
 from dotenv import load_dotenv
+from city_province_mapping import group_cities_by_province
 
 # 配置日志
 logging.basicConfig(
@@ -47,7 +48,8 @@ def load_config():
     load_dotenv()
 
     api_key = os.getenv('SENIVERSE_API_KEY')
-    city = os.getenv('CITY', 'beijing')
+    cities_str = os.getenv('CITY', 'beijing')
+    alert_types_str = os.getenv('ALERT_TYPES', '')
     feishu_webhook = os.getenv('FEISHU_WEBHOOK')
     report_url = os.getenv('REPORT_URL', 'https://example.com/report.html')
 
@@ -55,7 +57,13 @@ def load_config():
         logging.error("错误：请在 .env 文件中配置有效的 SENIVERSE_API_KEY")
         sys.exit(1)
 
-    return api_key, city, feishu_webhook, report_url
+    # 解析城市列表（支持逗号分隔）
+    cities = [city.strip() for city in cities_str.split(',') if city.strip()]
+
+    # 解析预警类型过滤列表
+    alert_types = [t.strip() for t in alert_types_str.split(',') if t.strip()] if alert_types_str else []
+
+    return api_key, cities, alert_types, feishu_webhook, report_url
 
 
 def get_weather_alarms(api_key, city):
@@ -127,8 +135,28 @@ def get_alert_color(level):
     return '#888888'
 
 
-def render_html(location, alarms, template_path='template.html', output_path='index.html'):
-    """使用 Jinja2 模板渲染 HTML"""
+def filter_alarms_by_type(alarms, alert_types):
+    """
+    根据预警类型过滤预警信息
+    只保留指定类型的预警（台风、雪、寒潮、冰雹、大雾）
+    """
+    if not alert_types:
+        return alarms  # 如果没有指定过滤类型，返回所有预警
+
+    filtered_alarms = []
+    for alarm in alarms:
+        alarm_type = alarm.get('type', '')
+        # 检查预警类型是否包含任何一个需要监控的关键词
+        if any(keyword in alarm_type for keyword in alert_types):
+            filtered_alarms.append(alarm)
+        else:
+            logging.info(f"过滤掉不相关的预警: {alarm_type} - {alarm.get('title', '')}")
+
+    return filtered_alarms
+
+
+def render_html(cities_data, template_path='template.html', output_path='index.html'):
+    """使用 Jinja2 模板渲染 HTML（支持多城市，按省份分组）"""
 
     # 读取模板文件
     try:
@@ -138,17 +166,25 @@ def render_html(location, alarms, template_path='template.html', output_path='in
         logging.error(f"错误：模板文件 {template_path} 不存在")
         sys.exit(1)
 
-    # 为每个预警添加颜色信息
-    for alarm in alarms:
-        alarm['color'] = get_alert_color(alarm.get('level', ''))
+    # 为每个城市的每个预警添加颜色信息
+    for city_data in cities_data:
+        for alarm in city_data['alarms']:
+            alarm['color'] = get_alert_color(alarm.get('level', ''))
+
+    # 按省份分组
+    provinces_data = group_cities_by_province(cities_data)
+
+    # 统计总预警数
+    total_alarms = sum(len(city_data['alarms']) for city_data in cities_data)
 
     # 渲染模板
     template = Template(template_content)
     html_content = template.render(
-        location=location,
-        alarms=alarms,
+        cities_data=cities_data,
+        provinces_data=provinces_data,
         update_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        has_alarms=len(alarms) > 0
+        has_alarms=total_alarms > 0,
+        total_alarms=total_alarms
     )
 
     # 写入文件
@@ -158,10 +194,17 @@ def render_html(location, alarms, template_path='template.html', output_path='in
     logging.info(f"HTML 报告已生成: {output_path}")
 
 
-def build_feishu_card(location, alarms, report_url):
-    """构建飞书消息卡片 JSON payload"""
-    city_name = location.get('name', '未知')
-    has_alarms = len(alarms) > 0
+def build_feishu_card(cities_data, report_url):
+    """构建飞书消息卡片 JSON payload（支持多城市，按省份分组）"""
+
+    # 按省份分组
+    provinces_data = group_cities_by_province(cities_data)
+
+    # 统计总预警数和有预警的省份
+    total_alarms = sum(province_data['total_alarms'] for province_data in provinces_data.values())
+    provinces_with_alarms = {k: v for k, v in provinces_data.items() if v['total_alarms'] > 0}
+
+    has_alarms = total_alarms > 0
 
     # 预警等级 emoji 映射
     level_emoji = {
@@ -174,36 +217,60 @@ def build_feishu_card(location, alarms, report_url):
 
     # 根据是否有预警，设置不同的卡片样式
     if has_alarms:
-        header_title = "⚠️ 区域异常天气预警"
+        header_title = "⚠️ 多地区异常天气预警"
         header_template = "red"
-        status_text = f"**监控区域：** {city_name}\n**预警数量：** {len(alarms)} 条"
-    else:
-        header_title = "✅ 天气状况正常"
-        header_template = "green"
-        status_text = f"**监控区域：** {city_name}\n**预警数量：** 0 条\n\n☀️ 当前无气象预警，天气状况良好"
 
-    # 构建预警列表内容
+        # 列出有预警的省份
+        province_list = '、'.join(list(provinces_with_alarms.keys())[:8])  # 最多显示8个省份
+        if len(provinces_with_alarms) > 8:
+            province_list += f" 等 {len(provinces_with_alarms)} 个省份"
+
+        status_text = f"**预警省份：** {province_list}\n**预警总数：** {total_alarms} 条"
+    else:
+        header_title = "✅ 所有监控区域天气正常"
+        header_template = "green"
+        status_text = f"**监控城市：** {len(cities_data)} 个\n**预警数量：** 0 条\n\n☀️ 当前所有区域无气象预警"
+
+    # 构建预警列表内容（按省份分组，显示所有预警）
     alarm_elements = []
     if has_alarms:
-        for alarm in alarms:
-            alarm_type = alarm.get('type', '未知')
-            alarm_level = alarm.get('level', '未知')
-            pub_date = alarm.get('pub_date', '未知时间')
-            emoji = level_emoji.get(alarm_level, '⚪')
-
-            # 添加分割线
+        # 按省份展示所有预警
+        for province_name, province_data in provinces_with_alarms.items():
+            # 添加省份标题
             alarm_elements.append({
                 "tag": "hr"
             })
-
-            # 添加预警信息
             alarm_elements.append({
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"**{emoji} {alarm_type} - {alarm_level}**\n📍 城市：{city_name}\n🕒 发布时间：{pub_date}"
+                    "content": f"**📍 {province_name}**（{province_data['total_alarms']} 条预警）"
                 }
             })
+
+            # 显示该省份的所有城市预警
+            for city_data in province_data['cities']:
+                if city_data['alarms']:
+                    for alarm in city_data['alarms']:
+                        alarm_type = alarm.get('type', '未知')
+                        alarm_level = alarm.get('level', '未知')
+                        city_name = city_data['name']
+
+                        # 获取预警等级的 emoji
+                        emoji = '⚪'
+                        for key, val in level_emoji.items():
+                            if key in alarm_level:
+                                emoji = val
+                                break
+
+                        # 添加预警信息
+                        alarm_elements.append({
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"  {emoji} **{alarm_type} - {alarm_level}** | {city_name}"
+                            }
+                        })
 
     # 构建完整卡片
     card = {
@@ -235,7 +302,7 @@ def build_feishu_card(location, alarms, report_url):
                             "tag": "button",
                             "text": {
                                 "tag": "plain_text",
-                                "content": "查看详细风险报告"
+                                "content": "📋 查看完整预警详情"
                             },
                             "type": "primary",
                             "url": report_url
@@ -247,7 +314,7 @@ def build_feishu_card(location, alarms, report_url):
                     "elements": [
                         {
                             "tag": "plain_text",
-                            "content": f"更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            "content": f"更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 监控类型：台风、雪、寒潮、冰雹、大雾"
                         }
                     ]
                 }
@@ -258,14 +325,14 @@ def build_feishu_card(location, alarms, report_url):
     return card
 
 
-def send_feishu_notification(webhook_url, location, alarms, report_url):
-    """发送飞书通知"""
+def send_feishu_notification(webhook_url, cities_data, report_url):
+    """发送飞书通知（支持多城市）"""
     if not webhook_url:
         logging.warning("未配置飞书 Webhook，跳过通知")
         return False
 
     try:
-        card = build_feishu_card(location, alarms, report_url)
+        card = build_feishu_card(cities_data, report_url)
         logging.info("正在发送飞书通知...")
 
         response = requests.post(webhook_url, json=card, timeout=10)
@@ -285,47 +352,88 @@ def send_feishu_notification(webhook_url, location, alarms, report_url):
 
 
 def main():
-    """主函数"""
+    """主函数（支持多城市监控和预警过滤）"""
     logging.info("=" * 50)
-    logging.info("气象预警脚本")
+    logging.info("气象预警脚本 - 多城市监控版")
     logging.info("=" * 50)
 
     # 加载配置
-    api_key, city, feishu_webhook, report_url = load_config()
-    logging.info(f"查询城市: {city}")
+    api_key, cities, alert_types, feishu_webhook, report_url = load_config()
+    logging.info(f"监控城市数量: {len(cities)}")
+    logging.info(f"城市列表: {', '.join(cities[:10])}{'...' if len(cities) > 10 else ''}")
+    logging.info(f"监控预警类型: {', '.join(alert_types) if alert_types else '全部'}")
 
-    # 获取预警数据
-    data = get_weather_alarms(api_key, city)
+    # 存储所有城市的预警数据
+    cities_data = []
+    total_alarms_before_filter = 0
+    total_alarms_after_filter = 0
 
-    if data is None:
-        logging.error("未获取到有效数据")
-        sys.exit(1)
+    # 逐个城市查询预警
+    for idx, city in enumerate(cities, 1):
+        logging.info(f"\n正在查询城市: {city} ({idx}/{len(cities)})")
 
-    # 提取预警信息
-    location, alarms = extract_alarms(data)
+        # 获取预警数据
+        data = get_weather_alarms(api_key, city)
 
-    if location is None:
-        logging.error("未获取到有效数据")
-        sys.exit(1)
+        if data is None:
+            logging.warning(f"城市 {city} 查询失败，跳过")
+            # 添加延迟避免API超载
+            time.sleep(0.8)
+            continue
 
-    city_name = location.get('name', '未知')
-    logging.info(f"城市: {city_name}")
-    logging.info(f"预警数量: {len(alarms)}")
+        # 提取预警信息
+        location, alarms = extract_alarms(data)
 
-    if alarms:
-        logging.info("\n当前预警:")
-        for alarm in alarms:
-            logging.info(f"  - {alarm.get('type', '未知')} | {alarm.get('level', '未知')} | {alarm.get('title', '')}")
-    else:
-        logging.info("\n当前无气象预警 ✓")
+        if location is None:
+            logging.warning(f"城市 {city} 数据解析失败，跳过")
+            # 添加延迟避免API超载
+            time.sleep(0.8)
+            continue
+
+        city_name = location.get('name', city)
+        total_alarms_before_filter += len(alarms)
+
+        # 过滤预警类型
+        if alert_types and alarms:
+            filtered_alarms = filter_alarms_by_type(alarms, alert_types)
+            logging.info(f"  原始预警数: {len(alarms)}, 过滤后: {len(filtered_alarms)}")
+            alarms = filtered_alarms
+
+        total_alarms_after_filter += len(alarms)
+
+        # 存储城市数据
+        cities_data.append({
+            'name': city_name,
+            'location': location,
+            'alarms': alarms
+        })
+
+        if alarms:
+            logging.info(f"  ✓ {city_name}: {len(alarms)} 条预警")
+            for alarm in alarms:
+                logging.info(f"    - {alarm.get('type', '未知')} | {alarm.get('level', '未知')}")
+        else:
+            logging.info(f"  ✓ {city_name}: 无预警")
+
+        # 添加延迟避免API超载（每个城市查询后等待0.8秒）
+        time.sleep(0.8)
+
+    # 汇总统计
+    logging.info("\n" + "=" * 50)
+    logging.info(f"查询完成！")
+    logging.info(f"监控城市: {len(cities_data)} 个")
+    logging.info(f"总预警数（过滤前）: {total_alarms_before_filter} 条")
+    logging.info(f"总预警数（过滤后）: {total_alarms_after_filter} 条")
+    logging.info(f"过滤掉: {total_alarms_before_filter - total_alarms_after_filter} 条不相关预警")
+    logging.info("=" * 50)
 
     # 生成 HTML 报告
     logging.info("\n正在生成 HTML 报告...")
-    render_html(location, alarms)
+    render_html(cities_data)
 
     # 发送飞书通知（无论是否有预警都发送）
     logging.info("\n准备发送飞书通知...")
-    send_feishu_notification(feishu_webhook, location, alarms, report_url)
+    send_feishu_notification(feishu_webhook, cities_data, report_url)
 
     logging.info("\n完成！")
 

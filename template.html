@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>气象预警 - {{ location.name }}</title>
+    <title>气象预警中心 - 监控 {{ cities_data|length }} 个城市</title>
     <style>
         * {
             margin: 0;
@@ -62,69 +62,6 @@
             text-align: center;
         }
 
-        /* 地图概览样式 */
-        .map-overview {
-            background: white;
-            border-radius: 16px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-        }
-
-        .map-overview h2 {
-            font-size: 1.5rem;
-            color: #2d3748;
-            margin-bottom: 20px;
-            text-align: center;
-        }
-
-        .map-container {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 30px;
-            align-items: center;
-        }
-
-        .china-map-echarts {
-            width: 100%;
-            height: 500px;
-            min-height: 400px;
-        }
-
-        .map-legend {
-            background: #f7fafc;
-            border-radius: 12px;
-            padding: 20px;
-        }
-
-        .map-legend h3 {
-            font-size: 1.1rem;
-            color: #2d3748;
-            margin-bottom: 15px;
-        }
-
-        .legend-items {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 0.9rem;
-            color: #4a5568;
-        }
-
-        .legend-color {
-            width: 16px;
-            height: 16px;
-            border-radius: 50%;
-            border: 2px solid white;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-        }
-
         .no-alarms {
             background: white;
             border-radius: 16px;
@@ -152,6 +89,70 @@
         .alarms-container {
             display: grid;
             gap: 20px;
+        }
+
+        .province-group {
+            background: white;
+            border-radius: 16px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            margin-bottom: 20px;
+        }
+
+        .province-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 3px solid #e2e8f0;
+        }
+
+        .province-header h2 {
+            font-size: 1.6rem;
+            color: #2d3748;
+            margin: 0;
+        }
+
+        .province-header h2::before {
+            content: "📍";
+            margin-right: 10px;
+        }
+
+        .province-alarm-count {
+            font-size: 1rem;
+            color: #f56565;
+            font-weight: bold;
+            background: #fed7d7;
+            padding: 6px 16px;
+            border-radius: 12px;
+        }
+
+        .city-group-header {
+            background: white;
+            border-radius: 12px;
+            padding: 15px 25px;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .city-group-header h2 {
+            font-size: 1.3rem;
+            color: #2d3748;
+            margin: 0;
+        }
+
+        .city-alarm-count {
+            font-size: 0.9rem;
+            color: #f56565;
+            font-weight: bold;
+            background: #fed7d7;
+            padding: 4px 12px;
+            border-radius: 12px;
         }
 
         .alarm-card {
@@ -280,238 +281,58 @@
     <div class="container">
         <div class="header">
             <h1>气象预警中心</h1>
-            <div class="location">{{ location.name }}</div>
+            <div class="location">监控 {{ cities_data|length }} 个城市</div>
         </div>
 
         <div class="update-time">
-            更新时间: {{ update_time }}
+            更新时间: {{ update_time }} | 总预警数: {{ total_alarms }} 条 | 监控类型: 台风、雪、寒潮、冰雹、大雾
         </div>
-
-        <!-- 地图概览区域 -->
-        <div class="map-overview">
-            <h2>📍 预警地区分布</h2>
-            <div class="map-container">
-                <div id="chinaMap" class="china-map-echarts"></div>
-                <div class="map-legend">
-                    <h3>预警图例</h3>
-                    <div class="legend-items">
-                        <div class="legend-item">
-                            <span class="legend-color" style="background: #FF4444;"></span>
-                            <span>红色预警（最高级别）</span>
-                        </div>
-                        <div class="legend-item">
-                            <span class="legend-color" style="background: #FF8800;"></span>
-                            <span>橙色预警（严重）</span>
-                        </div>
-                        <div class="legend-item">
-                            <span class="legend-color" style="background: #FFCC00;"></span>
-                            <span>黄色预警（较高）</span>
-                        </div>
-                        <div class="legend-item">
-                            <span class="legend-color" style="background: #4488FF;"></span>
-                            <span>蓝色预警（一般）</span>
-                        </div>
-                        <div class="legend-item">
-                            <span class="legend-color" style="background: #48bb78;"></span>
-                            <span>无预警（正常）</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ECharts 库 -->
-        <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-        <script>
-            // 初始化地图
-            const chartDom = document.getElementById('chinaMap');
-            const myChart = echarts.init(chartDom);
-
-            // 城市坐标数据（主要城市）
-            const cityCoords = {
-                '北京': [116.4074, 39.9042],
-                '上海': [121.4737, 31.2304],
-                '广州': [113.2644, 23.1291],
-                '深圳': [114.0579, 22.5431],
-                '成都': [104.0668, 30.5728],
-                '杭州': [120.1551, 30.2741],
-                '重庆': [106.9123, 29.4316],
-                '西安': [108.9398, 34.3416],
-                '苏州': [120.5853, 31.2989],
-                '武汉': [114.3055, 30.5928],
-                '天津': [117.3616, 39.3434],
-                '南京': [118.7969, 32.0603],
-                '长沙': [112.9388, 28.2282],
-                '郑州': [113.6253, 34.7466],
-                '沈阳': [123.4315, 41.8057],
-                '青岛': [120.3826, 36.0671],
-                '济南': [117.1206, 36.6512],
-                '哈尔滨': [126.5340, 45.8038],
-                '昆明': [102.7123, 25.0406],
-                '厦门': [118.0894, 24.4798]
-            };
-
-            // 预警等级颜色映射
-            const levelColors = {
-                '红色': '#FF4444',
-                '橙色': '#FF8800',
-                '黄色': '#FFCC00',
-                '蓝色': '#4488FF',
-                '无预警': '#48bb78'
-            };
-
-            // 预警等级对应的散点大小
-            const levelSizes = {
-                '红色': 30,
-                '橙色': 25,
-                '黄色': 20,
-                '蓝色': 15,
-                '无预警': 12
-            };
-
-            // 构建城市预警数据
-            const cityName = '{{ location.name }}';
-            const hasAlarms = {{ 'true' if has_alarms else 'false' }};
-            const alarmCount = {{ alarms|length }};
-
-            let warningLevel = '无预警';
-            {% if has_alarms %}
-            const alarmLevel = '{{ alarms[0].level if alarms else "" }}';
-            if (alarmLevel.includes('红色')) warningLevel = '红色';
-            else if (alarmLevel.includes('橙色')) warningLevel = '橙色';
-            else if (alarmLevel.includes('黄色')) warningLevel = '黄色';
-            else if (alarmLevel.includes('蓝色')) warningLevel = '蓝色';
-            {% endif %}
-
-            const warningCities = [{
-                name: cityName,
-                value: cityCoords[cityName] || [116.4074, 39.9042],
-                level: warningLevel,
-                count: alarmCount,
-                itemStyle: {
-                    color: levelColors[warningLevel]
-                }
-            }];
-
-            // 加载中国地图并渲染
-            fetch('https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json')
-                .then(response => response.json())
-                .then(geoJson => {
-                    // 注册地图
-                    echarts.registerMap('china', geoJson);
-
-                    // 配置项
-                    const option = {
-                        backgroundColor: 'transparent',
-                        tooltip: {
-                            trigger: 'item',
-                            formatter: function(params) {
-                                if (params.componentSubType === 'effectScatter') {
-                                    return `<strong>${params.data.name}</strong><br/>` +
-                                           `预警级别: ${params.data.level}<br/>` +
-                                           `预警数量: ${params.data.count} 条`;
-                                }
-                                return params.name;
-                            },
-                            backgroundColor: 'rgba(255, 255, 255, 0.95)',
-                            borderColor: '#ccc',
-                            borderWidth: 1,
-                            textStyle: {
-                                color: '#333'
-                            }
-                        },
-                        geo: {
-                            map: 'china',
-                            roam: false,
-                            label: {
-                                show: false
-                            },
-                            itemStyle: {
-                                areaColor: '#e0f2ff',
-                                borderColor: '#3b82f6',
-                                borderWidth: 1.5
-                            },
-                            emphasis: {
-                                itemStyle: {
-                                    areaColor: '#bfdbfe'
-                                }
-                            }
-                        },
-                        series: [
-                            {
-                                type: hasAlarms ? 'effectScatter' : 'scatter',
-                                coordinateSystem: 'geo',
-                                data: warningCities,
-                                symbolSize: function(val) {
-                                    const level = warningCities.find(c => c.value === val)?.level || '无预警';
-                                    return levelSizes[level];
-                                },
-                                showEffectOn: 'render',
-                                rippleEffect: {
-                                    brushType: 'stroke',
-                                    scale: 3,
-                                    period: 4
-                                },
-                                label: {
-                                    formatter: '{b}',
-                                    position: 'bottom',
-                                    show: true,
-                                    fontSize: 14,
-                                    fontWeight: 'bold',
-                                    color: '#1e293b'
-                                },
-                                itemStyle: {
-                                    shadowBlur: 10,
-                                    shadowColor: 'rgba(0, 0, 0, 0.3)',
-                                    borderColor: '#fff',
-                                    borderWidth: 2
-                                },
-                                emphasis: {
-                                    scale: true,
-                                    scaleSize: 15
-                                },
-                                zlevel: 1
-                            }
-                        ]
-                    };
-
-                    // 渲染图表
-                    myChart.setOption(option);
-
-                    // 响应式调整
-                    window.addEventListener('resize', function() {
-                        myChart.resize();
-                    });
-                })
-                .catch(error => {
-                    console.error('地图加载失败:', error);
-                    chartDom.innerHTML = '<div style="text-align:center;padding:50px;color:#999;">地图加载失败，请刷新页面重试</div>';
-                });
-        </script>
 
         {% if has_alarms %}
         <div class="alarms-container">
-            {% for alarm in alarms %}
-            <div class="alarm-card" style="border-left-color: {{ alarm.color }};">
-                <div class="alarm-header">
-                    <div class="alarm-type">{{ alarm.type }}</div>
-                    <div class="alarm-level" style="background-color: {{ alarm.color }};">
-                        {{ alarm.level }}
+            {% for province_name, province_data in provinces_data.items() %}
+                {% if province_data.total_alarms > 0 %}
+                <!-- 省份分组 -->
+                <div class="province-group">
+                    <div class="province-header">
+                        <h2>{{ province_name }}</h2>
+                        <span class="province-alarm-count">{{ province_data.total_alarms }} 条预警</span>
                     </div>
+
+                    {% for city_data in province_data.cities %}
+                        {% if city_data.alarms %}
+                        <!-- 城市标题 -->
+                        <div class="city-group-header">
+                            <h3>{{ city_data.name }}</h3>
+                            <span class="city-alarm-count">{{ city_data.alarms|length }} 条</span>
+                        </div>
+
+                        {% for alarm in city_data.alarms %}
+                        <div class="alarm-card" style="border-left-color: {{ alarm.color }};">
+                            <div class="alarm-header">
+                                <div class="alarm-type">{{ alarm.type }}</div>
+                                <div class="alarm-level" style="background-color: {{ alarm.color }};">
+                                    {{ alarm.level }}
+                                </div>
+                            </div>
+                            <div class="alarm-title">{{ alarm.title }}</div>
+                            <div class="alarm-description">{{ alarm.description }}</div>
+                            <div class="alarm-time">
+                                <span>发布: {{ alarm.pub_date }}</span>
+                            </div>
+                        </div>
+                        {% endfor %}
+                        {% endif %}
+                    {% endfor %}
                 </div>
-                <div class="alarm-title">{{ alarm.title }}</div>
-                <div class="alarm-description">{{ alarm.description }}</div>
-                <div class="alarm-time">
-                    <span>发布: {{ alarm.pub_date }}</span>
-                </div>
-            </div>
+                {% endif %}
             {% endfor %}
         </div>
         {% else %}
         <div class="no-alarms">
             <div class="icon">☀️</div>
-            <h2>当前无气象预警</h2>
-            <p>天气状况良好，请放心出行</p>
+            <h2>所有监控区域无气象预警</h2>
+            <p>{{ cities_data|length }} 个城市天气状况良好，请放心出行</p>
         </div>
         {% endif %}
 
