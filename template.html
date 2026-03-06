@@ -85,20 +85,12 @@
             align-items: center;
         }
 
-        .china-map-bg {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-
-        .china-map-bg svg {
+        .china-map {
             width: 100%;
-            max-width: 400px;
-            height: auto;
-        }
-
-        .city-marker text {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            height: 500px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
 
         .map-legend {
@@ -278,6 +270,10 @@
             .map-overview h2 {
                 font-size: 1.2rem;
             }
+
+            .china-map {
+                height: 300px;
+            }
         }
     </style>
 </head>
@@ -296,33 +292,7 @@
         <div class="map-overview">
             <h2>📍 预警地区分布</h2>
             <div class="map-container">
-                <div class="china-map-bg">
-                    <!-- 简化的中国地图轮廓 SVG -->
-                    <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
-                        <!-- 中国地图简化轮廓 -->
-                        <path d="M 80 120 L 100 80 L 140 70 L 180 80 L 220 90 L 250 100 L 280 120 L 300 150 L 310 180 L 320 220 L 310 260 L 290 290 L 260 310 L 220 320 L 180 320 L 140 310 L 110 290 L 90 260 L 80 220 L 75 180 L 80 140 Z"
-                              fill="#e8f4f8"
-                              stroke="#93c5fd"
-                              stroke-width="2"/>
-
-                        {% if has_alarms %}
-                        <!-- 标记预警城市位置 -->
-                        <g class="city-marker">
-                            <circle cx="200" cy="150" r="15" fill="{{ alarms[0].color }}" opacity="0.3">
-                                <animate attributeName="r" values="15;25;15" dur="2s" repeatCount="indefinite"/>
-                            </circle>
-                            <circle cx="200" cy="150" r="8" fill="{{ alarms[0].color }}" stroke="white" stroke-width="2"/>
-                            <text x="200" y="180" text-anchor="middle" font-size="14" fill="#2d3748" font-weight="bold">{{ location.name }}</text>
-                        </g>
-                        {% else %}
-                        <!-- 无预警时显示绿色标记 -->
-                        <g class="city-marker">
-                            <circle cx="200" cy="150" r="8" fill="#48bb78" stroke="white" stroke-width="2"/>
-                            <text x="200" y="180" text-anchor="middle" font-size="14" fill="#2d3748" font-weight="bold">{{ location.name }}</text>
-                        </g>
-                        {% endif %}
-                    </svg>
-                </div>
+                <div id="map" class="china-map"></div>
                 <div class="map-legend">
                     <h3>预警图例</h3>
                     <div class="legend-items">
@@ -350,6 +320,110 @@
                 </div>
             </div>
         </div>
+
+        <!-- Leaflet 地图脚本 -->
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script>
+            // 中国主要城市坐标
+            const cityCoords = {
+                '北京': [39.9042, 116.4074],
+                '上海': [31.2304, 121.4737],
+                '广州': [23.1291, 113.2644],
+                '深圳': [22.5431, 114.0579],
+                '成都': [30.5728, 104.0668],
+                '杭州': [30.2741, 120.1551],
+                '重庆': [29.4316, 106.9123],
+                '西安': [34.3416, 108.9398],
+                '苏州': [31.2989, 120.5853],
+                '武汉': [30.5928, 114.3055],
+                '天津': [39.3434, 117.3616],
+                '南京': [32.0603, 118.7969],
+                '长沙': [28.2282, 112.9388],
+                '郑州': [34.7466, 113.6253],
+                '沈阳': [41.8057, 123.4315],
+                '青岛': [36.0671, 120.3826],
+                '济南': [36.6512, 117.1206],
+                '哈尔滨': [45.8038, 126.5340],
+                '昆明': [25.0406, 102.7123],
+                '厦门': [24.4798, 118.0894]
+            };
+
+            // 获取城市坐标，默认使用北京
+            const cityName = '{{ location.name }}';
+            const coords = cityCoords[cityName] || [39.9042, 116.4074];
+
+            // 初始化地图
+            const map = L.map('map', {
+                center: [35.8617, 104.1954], // 中国中心
+                zoom: 5,
+                zoomControl: true,
+                attributionControl: false
+            });
+
+            // 添加地图图层（使用 OpenStreetMap）
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 18,
+                minZoom: 4
+            }).addTo(map);
+
+            // 添加城市标记
+            {% if has_alarms %}
+            // 有预警时使用预警颜色
+            const markerColor = '{{ alarms[0].color if alarms else "#48bb78" }}';
+            const markerIcon = L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="
+                    background-color: ${markerColor};
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 50%;
+                    border: 3px solid white;
+                    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+                    animation: pulse 2s infinite;
+                "></div>`,
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            });
+
+            const marker = L.marker(coords, { icon: markerIcon }).addTo(map);
+            marker.bindPopup(`<b>${cityName}</b><br>⚠️ 预警数量: {{ alarms|length }} 条`).openPopup();
+            {% else %}
+            // 无预警时使用绿色标记
+            const markerIcon = L.divIcon({
+                className: 'custom-marker',
+                html: `<div style="
+                    background-color: #48bb78;
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 50%;
+                    border: 3px solid white;
+                    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+                "></div>`,
+                iconSize: [20, 20],
+                iconAnchor: [10, 10]
+            });
+
+            const marker = L.marker(coords, { icon: markerIcon }).addTo(map);
+            marker.bindPopup(`<b>${cityName}</b><br>✅ 当前无预警`).openPopup();
+            {% endif %}
+
+            // 自动调整视图以包含标记
+            map.setView(coords, 8);
+        </script>
+
+        <style>
+            @keyframes pulse {
+                0%, 100% {
+                    transform: scale(1);
+                    opacity: 1;
+                }
+                50% {
+                    transform: scale(1.2);
+                    opacity: 0.8;
+                }
+            }
+        </style>
 
         {% if has_alarms %}
         <div class="alarms-container">
