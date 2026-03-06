@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>气象预警 - 北京</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            color: #2d3748;
+            margin-bottom: 10px;
+        }
+
+        .header .location {
+            font-size: 1.2rem;
+            color: #718096;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .header .location::before {
+            content: "📍";
+            font-size: 1.4rem;
+        }
+
+        .update-time {
+            background: white;
+            border-radius: 12px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            font-size: 0.9rem;
+            color: #718096;
+            text-align: center;
+        }
+
+        /* 地图概览样式 */
+        .map-overview {
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .map-overview h2 {
+            font-size: 1.5rem;
+            color: #2d3748;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .map-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            align-items: center;
+        }
+
+        .china-map-bg {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .china-map-bg svg {
+            width: 100%;
+            max-width: 400px;
+            height: auto;
+        }
+
+        .city-marker text {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        }
+
+        .map-legend {
+            background: #f7fafc;
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .map-legend h3 {
+            font-size: 1.1rem;
+            color: #2d3748;
+            margin-bottom: 15px;
+        }
+
+        .legend-items {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.9rem;
+            color: #4a5568;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .no-alarms {
+            background: white;
+            border-radius: 16px;
+            padding: 60px 30px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .no-alarms .icon {
+            font-size: 5rem;
+            margin-bottom: 20px;
+        }
+
+        .no-alarms h2 {
+            font-size: 1.8rem;
+            color: #48bb78;
+            margin-bottom: 10px;
+        }
+
+        .no-alarms p {
+            color: #718096;
+            font-size: 1.1rem;
+        }
+
+        .alarms-container {
+            display: grid;
+            gap: 20px;
+        }
+
+        .alarm-card {
+            background: white;
+            border-radius: 16px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            border-left: 6px solid;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .alarm-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .alarm-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .alarm-type {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .alarm-level {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 20px;
+            color: white;
+            font-weight: bold;
+            font-size: 0.9rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .alarm-title {
+            font-size: 1.1rem;
+            color: #4a5568;
+            margin-bottom: 12px;
+            line-height: 1.6;
+        }
+
+        .alarm-description {
+            color: #718096;
+            line-height: 1.8;
+            margin-bottom: 15px;
+            padding: 15px;
+            background: #f7fafc;
+            border-radius: 8px;
+        }
+
+        .alarm-time {
+            display: flex;
+            gap: 20px;
+            font-size: 0.85rem;
+            color: #a0aec0;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e2e8f0;
+        }
+
+        .alarm-time span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .alarm-time span::before {
+            content: "🕒";
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding: 20px;
+            color: white;
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .alarm-card {
+                padding: 20px;
+            }
+
+            .alarm-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .map-container {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+
+            .map-overview {
+                padding: 20px;
+            }
+
+            .map-overview h2 {
+                font-size: 1.2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>气象预警中心</h1>
+            <div class="location">北京</div>
+        </div>
+
+        <div class="update-time">
+            更新时间: 2026-03-06 10:53:27
+        </div>
+
+        <!-- 地图概览区域 -->
+        <div class="map-overview">
+            <h2>📍 预警地区分布</h2>
+            <div class="map-container">
+                <div class="china-map-bg">
+                    <!-- 简化的中国地图轮廓 SVG -->
+                    <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+                        <!-- 中国地图简化轮廓 -->
+                        <path d="M 80 120 L 100 80 L 140 70 L 180 80 L 220 90 L 250 100 L 280 120 L 300 150 L 310 180 L 320 220 L 310 260 L 290 290 L 260 310 L 220 320 L 180 320 L 140 310 L 110 290 L 90 260 L 80 220 L 75 180 L 80 140 Z"
+                              fill="#e8f4f8"
+                              stroke="#93c5fd"
+                              stroke-width="2"/>
+
+                        
+                        <!-- 无预警时显示绿色标记 -->
+                        <g class="city-marker">
+                            <circle cx="200" cy="150" r="8" fill="#48bb78" stroke="white" stroke-width="2"/>
+                            <text x="200" y="180" text-anchor="middle" font-size="14" fill="#2d3748" font-weight="bold">北京</text>
+                        </g>
+                        
+                    </svg>
+                </div>
+                <div class="map-legend">
+                    <h3>预警图例</h3>
+                    <div class="legend-items">
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #FF4444;"></span>
+                            <span>红色预警（最高级别）</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #FF8800;"></span>
+                            <span>橙色预警（严重）</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #FFCC00;"></span>
+                            <span>黄色预警（较高）</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #4488FF;"></span>
+                            <span>蓝色预警（一般）</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #48bb78;"></span>
+                            <span>无预警（正常）</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        
+        <div class="no-alarms">
+            <div class="icon">☀️</div>
+            <h2>当前无气象预警</h2>
+            <p>天气状况良好，请放心出行</p>
+        </div>
+        
+
+        <div class="footer">
+            数据来源: 心知天气 | 仅供参考，请以官方发布为准
+        </div>
+    </div>
+</body>
+</html>
