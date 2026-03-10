@@ -50,6 +50,7 @@ jobs:
           echo "CITY=${{ secrets.CITY }}" >> .env
           echo "ALERT_TYPES=${{ secrets.ALERT_TYPES }}" >> .env
           echo "FEISHU_WEBHOOK=${{ secrets.FEISHU_WEBHOOK }}" >> .env
+          echo "FEISHU_SECRET=${{ secrets.FEISHU_SECRET }}" >> .env
           echo "REPORT_URL=${{ secrets.REPORT_URL }}" >> .env
 
       - name: 运行气象预警脚本
