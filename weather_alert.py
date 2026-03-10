@@ -168,6 +168,53 @@ def filter_alarms_by_type(alarms, alert_types):
     return filtered_alarms
 
 
+def deduplicate_alarms_by_type(alarms):
+    """
+    对同一类型的预警去重，只保留更新时间最新的那一条
+
+    参数:
+        alarms: 预警列表
+
+    返回:
+        去重后的预警列表（每种类型只保留最新的一条）
+    """
+    if not alarms:
+        return alarms
+
+    # 按预警类型分组，保留每种类型最新的一条
+    alarm_dict = {}
+
+    for alarm in alarms:
+        alarm_type = alarm.get('type', '未知')
+        alarm_level = alarm.get('level', '未知')
+        # 使用"类型-等级"作为key，确保同类型同等级只保留一条
+        key = f"{alarm_type}-{alarm_level}"
+
+        # 获取预警的更新时间
+        pub_date = alarm.get('pub_date', '')
+
+        # 如果该类型预警不存在，或者当前预警更新时间更晚，则更新
+        if key not in alarm_dict:
+            alarm_dict[key] = alarm
+            logging.info(f"  保留预警: {key} (更新时间: {pub_date})")
+        else:
+            existing_pub_date = alarm_dict[key].get('pub_date', '')
+            # 比较更新时间，保留最新的
+            if pub_date > existing_pub_date:
+                logging.info(f"  更新预警: {key} (新时间: {pub_date} > 旧时间: {existing_pub_date})")
+                alarm_dict[key] = alarm
+            else:
+                logging.info(f"  过滤重复预警: {key} (时间: {pub_date} <= {existing_pub_date})")
+
+    # 返回去重后的预警列表
+    deduplicated_alarms = list(alarm_dict.values())
+
+    if len(deduplicated_alarms) < len(alarms):
+        logging.info(f"  去重完成: {len(alarms)} 条 -> {len(deduplicated_alarms)} 条（移除 {len(alarms) - len(deduplicated_alarms)} 条重复预警）")
+
+    return deduplicated_alarms
+
+
 def render_html(cities_data, template_path='template.html', output_path='index.html'):
     """使用 Jinja2 模板渲染 HTML（支持多城市，按省份分组）"""
 
@@ -416,6 +463,10 @@ def main():
             filtered_alarms = filter_alarms_by_type(alarms, alert_types)
             logging.info(f"  原始预警数: {len(alarms)}, 过滤后: {len(filtered_alarms)}")
             alarms = filtered_alarms
+
+        # 对同类型预警去重，只保留最新的一条
+        if alarms:
+            alarms = deduplicate_alarms_by_type(alarms)
 
         total_alarms_after_filter += len(alarms)
 
