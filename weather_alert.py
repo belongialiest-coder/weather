@@ -10,6 +10,9 @@ import sys
 import requests
 import logging
 import time
+import hmac
+import hashlib
+import base64
 from datetime import datetime
 from jinja2 import Template
 from dotenv import load_dotenv
@@ -51,6 +54,7 @@ def load_config():
     cities_str = os.getenv('CITY', 'beijing')
     alert_types_str = os.getenv('ALERT_TYPES', '')
     feishu_webhook = os.getenv('FEISHU_WEBHOOK')
+    feishu_secret = os.getenv('FEISHU_SECRET', '')  # 飞书签名密钥
     report_url = os.getenv('REPORT_URL', 'https://example.com/report.html')
 
     if not api_key or api_key == 'your_api_key_here':
@@ -63,7 +67,7 @@ def load_config():
     # 解析预警类型过滤列表
     alert_types = [t.strip() for t in alert_types_str.split(',') if t.strip()] if alert_types_str else []
 
-    return api_key, cities, alert_types, feishu_webhook, report_url
+    return api_key, cities, alert_types, feishu_webhook, feishu_secret, report_url
 
 
 def get_weather_alarms(api_key, city):
@@ -146,6 +150,34 @@ def get_alert_color(level):
         if key in level:
             return ALERT_LEVEL_COLORS[key]
     return '#888888'
+
+
+def gen_feishu_sign(secret):
+    """
+    生成飞书机器人签名
+
+    参数:
+        secret: 飞书机器人的签名密钥
+
+    返回:
+        (timestamp, sign): 时间戳和签名字符串
+    """
+    # 获取当前时间戳
+    timestamp = str(int(time.time()))
+
+    # 拼接字符串: timestamp + "\n" + secret
+    string_to_sign = '{}\n{}'.format(timestamp, secret)
+
+    # 使用HmacSHA256算法计算签名
+    hmac_code = hmac.new(
+        string_to_sign.encode("utf-8"),
+        digestmod=hashlib.sha256
+    ).digest()
+
+    # 对结果进行base64编码
+    sign = base64.b64encode(hmac_code).decode('utf-8')
+
+    return timestamp, sign
 
 
 def filter_alarms_by_type(alarms, alert_types):
@@ -387,14 +419,32 @@ def build_feishu_card(cities_data, report_url):
     return card
 
 
-def send_feishu_notification(webhook_url, cities_data, report_url):
-    """发送飞书通知（支持多城市）"""
+def send_feishu_notification(webhook_url, cities_data, report_url, secret=''):
+    """
+    发送飞书通知（支持多城市和签名校验）
+
+    参数:
+        webhook_url: 飞书webhook地址
+        cities_data: 城市数据列表
+        report_url: 报告URL
+        secret: 飞书签名密钥（可选，如果配置了则启用签名校验）
+    """
     if not webhook_url:
         logging.warning("未配置飞书 Webhook，跳过通知")
         return False
 
     try:
         card = build_feishu_card(cities_data, report_url)
+
+        # 如果配置了签名密钥，添加签名信息
+        if secret:
+            timestamp, sign = gen_feishu_sign(secret)
+            card['timestamp'] = timestamp
+            card['sign'] = sign
+            logging.info(f"已启用飞书签名校验 (timestamp: {timestamp})")
+        else:
+            logging.warning("未配置飞书签名密钥，建议配置以提高安全性")
+
         logging.info("正在发送飞书通知...")
 
         response = requests.post(webhook_url, json=card, timeout=10)
@@ -420,7 +470,7 @@ def main():
     logging.info("=" * 50)
 
     # 加载配置
-    api_key, cities, alert_types, feishu_webhook, report_url = load_config()
+    api_key, cities, alert_types, feishu_webhook, feishu_secret, report_url = load_config()
     logging.info(f"监控城市数量: {len(cities)}")
     logging.info(f"城市列表: {', '.join(cities[:10])}{'...' if len(cities) > 10 else ''}")
     logging.info(f"监控预警类型: {', '.join(alert_types) if alert_types else '全部'}")
@@ -506,7 +556,7 @@ def main():
 
     # 发送飞书通知（无论是否有预警都发送）
     logging.info("\n准备发送飞书通知...")
-    send_feishu_notification(feishu_webhook, cities_data, report_url)
+    send_feishu_notification(feishu_webhook, cities_data, report_url, feishu_secret)
 
     logging.info("\n完成！")
 
