@@ -171,24 +171,25 @@ def filter_alarms_by_type(alarms, alert_types):
 def deduplicate_alarms_by_type(alarms):
     """
     对同一类型的预警去重，只保留更新时间最新的那一条
+    注意：相同类型不同等级的预警（如"大雾-黄色"和"大雾-橙色"）会被去重，只保留最新的一条
 
     参数:
         alarms: 预警列表
 
     返回:
-        去重后的预警列表（每种类型只保留最新的一条）
+        去重后的预警列表（每种类型只保留最新的一条，不区分等级）
     """
     if not alarms:
         return alarms
 
-    # 按预警类型分组，保留每种类型最新的一条
+    # 按预警类型分组，保留每种类型最新的一条（不区分等级）
     alarm_dict = {}
 
     for alarm in alarms:
         alarm_type = alarm.get('type', '未知')
         alarm_level = alarm.get('level', '未知')
-        # 使用"类型-等级"作为key，确保同类型同等级只保留一条
-        key = f"{alarm_type}-{alarm_level}"
+        # 只使用"类型"作为key，不区分等级
+        key = alarm_type
 
         # 获取预警的更新时间
         pub_date = alarm.get('pub_date', '')
@@ -196,15 +197,16 @@ def deduplicate_alarms_by_type(alarms):
         # 如果该类型预警不存在，或者当前预警更新时间更晚，则更新
         if key not in alarm_dict:
             alarm_dict[key] = alarm
-            logging.info(f"  保留预警: {key} (更新时间: {pub_date})")
+            logging.info(f"  保留预警: {key} ({alarm_level}) - 更新时间: {pub_date}")
         else:
             existing_pub_date = alarm_dict[key].get('pub_date', '')
+            existing_level = alarm_dict[key].get('level', '未知')
             # 比较更新时间，保留最新的
             if pub_date > existing_pub_date:
-                logging.info(f"  更新预警: {key} (新时间: {pub_date} > 旧时间: {existing_pub_date})")
+                logging.info(f"  更新预警: {key} ({existing_level} -> {alarm_level}) - 新时间: {pub_date} > 旧时间: {existing_pub_date}")
                 alarm_dict[key] = alarm
             else:
-                logging.info(f"  过滤重复预警: {key} (时间: {pub_date} <= {existing_pub_date})")
+                logging.info(f"  过滤重复预警: {key} ({alarm_level}) - 时间: {pub_date} <= {existing_pub_date}")
 
     # 返回去重后的预警列表
     deduplicated_alarms = list(alarm_dict.values())
