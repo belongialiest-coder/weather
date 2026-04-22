@@ -79,18 +79,22 @@ def get_weather_alarms(api_key, city):
         logging.warning(f"城市 {city} 找不到对应的代码，跳过该城市")
         return None
 
-    url = 'https://api.qweather.com/v1/warning/now'
+    url = 'https://api.qweather.com/v7/warning/now'
 
     params = {
         'location': city_code,
-        'key': api_key,
         'lang': 'zh'
+    }
+
+    # 使用 Header 方式认证（更安全，符合官方推荐）
+    headers = {
+        'X-QW-Api-Key': api_key
     }
 
     for attempt in range(API_CONFIG["max_retries"]):
         try:
             logging.info(f"正在获取气象预警信息... (尝试 {attempt + 1}/{API_CONFIG['max_retries']})")
-            response = requests.get(url, params=params, timeout=API_CONFIG["timeout"])
+            response = requests.get(url, params=params, headers=headers, timeout=API_CONFIG["timeout"])
 
             # 特殊处理404错误（城市不存在）
             if response.status_code == 404:
