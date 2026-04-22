@@ -17,6 +17,7 @@ from datetime import datetime
 from jinja2 import Template
 from dotenv import load_dotenv
 from city_province_mapping import group_cities_by_province
+from qweather_city_codes import get_city_code
 
 # 配置日志
 logging.basicConfig(
@@ -50,7 +51,7 @@ def load_config():
     """从 .env 文件加载配置"""
     load_dotenv()
 
-    api_key = os.getenv('SENIVERSE_API_KEY')
+    api_key = os.getenv('QWEATHER_API_KEY')
     cities_str = os.getenv('CITY', 'beijing')
     alert_types_str = os.getenv('ALERT_TYPES', '')
     feishu_webhook = os.getenv('FEISHU_WEBHOOK')
@@ -58,7 +59,7 @@ def load_config():
     report_url = os.getenv('REPORT_URL', 'https://example.com/report.html')
 
     if not api_key or api_key == 'your_api_key_here':
-        logging.error("错误：请在 .env 文件中配置有效的 SENIVERSE_API_KEY")
+        logging.error("错误：请在 .env 文件中配置有效的 QWEATHER_API_KEY")
         sys.exit(1)
 
     # 解析城市列表（支持逗号分隔）
@@ -71,14 +72,19 @@ def load_config():
 
 
 def get_weather_alarms(api_key, city):
-    """调用心知天气 API 获取气象预警信息（带重试机制）"""
-    url = 'https://api.seniverse.com/v3/weather/alarm.json'
+    """调用和风天气 API 获取气象预警信息（带重试机制）"""
+    # 将城市中文名转换为城市代码
+    city_code = get_city_code(city)
+    if city_code is None:
+        logging.warning(f"城市 {city} 找不到对应的代码，跳过该城市")
+        return None
+
+    url = 'https://api.qweather.com/v1/warning/now'
 
     params = {
+        'location': city_code,
         'key': api_key,
-        'location': city,
-        'language': 'zh-Hans',
-        'detail': 'more'
+        'lang': 'zh'
     }
 
     for attempt in range(API_CONFIG["max_retries"]):
@@ -95,10 +101,10 @@ def get_weather_alarms(api_key, city):
             data = response.json()
 
             # 检查API返回的错误
-            if 'status_code' in data:
-                error_msg = data.get('status', 'API返回错误')
-                logging.error(f"API错误: {error_msg} (状态码: {data['status_code']})")
-                if data['status_code'] == 'AP010003':
+            if 'code' in data and data['code'] != '200':
+                error_msg = data.get('msg', 'API返回错误')
+                logging.error(f"API错误: {error_msg} (代码: {data['code']})")
+                if data['code'] == '401':
                     logging.error("API Key无效，请检查配置")
                     sys.exit(1)
                 return None
@@ -131,12 +137,21 @@ def get_weather_alarms(api_key, city):
 def extract_alarms(data):
     """提取预警数据"""
     try:
-        results = data.get('results', [])
-        if not results:
+        # 和风天气API返回格式：data['warning'] 是一个数组
+        alarms = data.get('warning', [])
+        if not alarms:
             return None, None
 
-        location = results[0].get('location', {})
-        alarms = results[0].get('alarms', [])
+        # 城市信息存储在顶级字段中
+        location = {
+            'id': data.get('id', ''),
+            'name': data.get('name', 'Unknown'),
+            'country': data.get('country', 'China'),
+            'adm1': data.get('adm1', ''),
+            'adm2': data.get('adm2', ''),
+            'lat': data.get('lat', ''),
+            'lon': data.get('lon', '')
+        }
 
         return location, alarms
     except (KeyError, IndexError) as e:
@@ -219,26 +234,26 @@ def deduplicate_alarms_by_type(alarms):
 
     for alarm in alarms:
         alarm_type = alarm.get('type', '未知')
-        alarm_level = alarm.get('level', '未知')
+        alarm_level = alarm.get('severity', '未知')
         # 只使用"类型"作为key，不区分等级
         key = alarm_type
 
-        # 获取预警的更新时间
-        pub_date = alarm.get('pub_date', '')
+        # 获取预警的更新时间 (和风天气使用 pubTime)
+        pub_time = alarm.get('pubTime', '')
 
         # 如果该类型预警不存在，或者当前预警更新时间更晚，则更新
         if key not in alarm_dict:
             alarm_dict[key] = alarm
-            logging.info(f"  保留预警: {key} ({alarm_level}) - 更新时间: {pub_date}")
+            logging.info(f"  保留预警: {key} ({alarm_level}) - 更新时间: {pub_time}")
         else:
-            existing_pub_date = alarm_dict[key].get('pub_date', '')
-            existing_level = alarm_dict[key].get('level', '未知')
+            existing_pub_time = alarm_dict[key].get('pubTime', '')
+            existing_level = alarm_dict[key].get('severity', '未知')
             # 比较更新时间，保留最新的
-            if pub_date > existing_pub_date:
-                logging.info(f"  更新预警: {key} ({existing_level} -> {alarm_level}) - 新时间: {pub_date} > 旧时间: {existing_pub_date}")
+            if pub_time > existing_pub_time:
+                logging.info(f"  更新预警: {key} ({existing_level} -> {alarm_level}) - 新时间: {pub_time} > 旧时间: {existing_pub_time}")
                 alarm_dict[key] = alarm
             else:
-                logging.info(f"  过滤重复预警: {key} ({alarm_level}) - 时间: {pub_date} <= {existing_pub_date}")
+                logging.info(f"  过滤重复预警: {key} ({alarm_level}) - 时间: {pub_time} <= {existing_pub_time}")
 
     # 返回去重后的预警列表
     deduplicated_alarms = list(alarm_dict.values())
@@ -300,13 +315,12 @@ def build_feishu_card(cities_data, report_url):
 
     has_alarms = total_alarms > 0
 
-    # 预警等级 emoji 映射
+    # 预警等级 emoji 映射（和风天气使用 severity）
     level_emoji = {
-        '红色': '🔴',
-        '橙色': '🟠',
-        '黄色': '🟡',
-        '蓝色': '🔵',
-        '白色': '⚪'
+        '极端': '🔴',
+        '严重': '🟠',
+        '较重': '🟡',
+        '轻微': '🔵',
     }
 
     # 根据是否有预警，设置不同的卡片样式
@@ -347,13 +361,13 @@ def build_feishu_card(cities_data, report_url):
                 if city_data['alarms']:
                     for alarm in city_data['alarms']:
                         alarm_type = alarm.get('type', '未知')
-                        alarm_level = alarm.get('level', '未知')
+                        alarm_severity = alarm.get('severity', '未知')
                         city_name = city_data['name']
 
                         # 获取预警等级的 emoji
                         emoji = '⚪'
                         for key, val in level_emoji.items():
-                            if key in alarm_level:
+                            if key in alarm_severity:
                                 emoji = val
                                 break
 
@@ -362,7 +376,7 @@ def build_feishu_card(cities_data, report_url):
                             "tag": "div",
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"  {emoji} **{alarm_type} - {alarm_level}** | {city_name}"
+                                "content": f"  {emoji} **{alarm_type} - {alarm_severity}** | {city_name}"
                             }
                         })
 
@@ -408,7 +422,7 @@ def build_feishu_card(cities_data, report_url):
                     "elements": [
                         {
                             "tag": "plain_text",
-                            "content": f"更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 监控类型：台风、雪、寒潮、冰雹、大雾"
+                            "content": f"更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 数据源：和风天气"
                         }
                     ]
                 }

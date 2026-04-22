@@ -46,7 +46,7 @@ jobs:
 
       - name: 创建 .env 配置文件
         run: |
-          echo "SENIVERSE_API_KEY=${{ secrets.SENIVERSE_API_KEY }}" >> .env
+          echo "QWEATHER_API_KEY=${{ secrets.QWEATHER_API_KEY }}" >> .env
           echo "CITY=${{ secrets.CITY }}" >> .env
           echo "ALERT_TYPES=${{ secrets.ALERT_TYPES }}" >> .env
           echo "FEISHU_WEBHOOK=${{ secrets.FEISHU_WEBHOOK }}" >> .env
