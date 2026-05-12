@@ -1,470 +1,486 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-气象预警脚本
-使用心知天气 API 获取气象灾害预警信息，并生成美观的 HTML 报告
+西太平洋热带扰动监控脚本
+使用 tropycal 获取 JTWC 实时数据，监控西太平洋热带扰动和热带气旋，并发送飞书通知
 """
 
 import os
 import sys
-import requests
 import logging
 import time
 import hmac
 import hashlib
 import base64
-from datetime import datetime
-from jinja2 import Template
+import requests
+from datetime import datetime, timezone
 from dotenv import load_dotenv
-from city_province_mapping import group_cities_by_province
-from qweather_city_codes import get_city_code
 
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    filename='weather_alert.log'
+    filename='typhoon_monitor.log'
 )
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 logging.getLogger('').addHandler(console)
 
 
-# 预警等级颜色映射
-ALERT_LEVEL_COLORS = {
-    '红色': '#FF4444',
-    '橙色': '#FF8800',
-    '黄色': '#FFCC00',
-    '蓝色': '#4488FF',
-    '白色': '#CCCCCC',
-}
-
-# API配置
-API_CONFIG = {
-    "max_retries": 3,
-    "initial_delay": 2,
-    "timeout": 10
-}
-
-
 def load_config():
-    """从 .env 文件加载配置"""
+    """从环境变量加载配置"""
     load_dotenv()
-
-    api_key = os.getenv('QWEATHER_API_KEY')
-    cities_str = os.getenv('CITY', 'beijing')
-    alert_types_str = os.getenv('ALERT_TYPES', '')
     feishu_webhook = os.getenv('FEISHU_WEBHOOK')
-    feishu_secret = os.getenv('FEISHU_SECRET', '')  # 飞书签名密钥
-    report_url = os.getenv('REPORT_URL', 'https://example.com/report.html')
-
-    if not api_key or api_key == 'your_api_key_here':
-        logging.error("错误：请在 .env 文件中配置有效的 QWEATHER_API_KEY")
-        sys.exit(1)
-
-    # 解析城市列表（支持逗号分隔）
-    cities = [city.strip() for city in cities_str.split(',') if city.strip()]
-
-    # 解析预警类型过滤列表
-    alert_types = [t.strip() for t in alert_types_str.split(',') if t.strip()] if alert_types_str else []
-
-    return api_key, cities, alert_types, feishu_webhook, feishu_secret, report_url
+    feishu_secret = os.getenv('FEISHU_SECRET', '')
+    report_url = os.getenv('REPORT_URL', '')
+    return feishu_webhook, feishu_secret, report_url
 
 
-def get_weather_alarms(api_key, city):
-    """调用和风天气 API 获取气象预警信息（带重试机制）"""
-    # 将城市中文名转换为城市代码
-    city_code = get_city_code(city)
-    if city_code is None:
-        logging.warning(f"城市 {city} 找不到对应的代码，跳过该城市")
-        return None
-
-    url = 'https://api.qweather.com/v7/warning/now'
-
-    params = {
-        'location': city_code,
-        'lang': 'zh'
+def get_storm_type_label(storm_type):
+    """获取热带气旋类型中文标签"""
+    type_map = {
+        'invest': '热带扰动',
+        'tropical depression': '热带低压',
+        'tropical storm': '热带风暴',
+        'typhoon': '台风',
+        'supertyphoon': '超强台风',
+        'subtropical storm': '亚热带风暴',
+        'subtropical depression': '亚热带低压',
     }
+    key = (storm_type or '').lower()
+    return type_map.get(key, storm_type or '未知')
 
-    # 使用 Header 方式认证（更安全，符合官方推荐）
-    headers = {
-        'X-QW-Api-Key': api_key
-    }
 
-    for attempt in range(API_CONFIG["max_retries"]):
+def get_storm_report_time(storm):
+    """从 storm 对象中提取最新报文时间，返回 datetime 或 None"""
+    times = getattr(storm, 'time', None)
+    if times and len(times) > 0:
+        t = times[-1]
+        # tropycal 返回的可能是 numpy.datetime64 或 datetime
+        if hasattr(t, 'to_pydatetime'):
+            return t.to_pydatetime().replace(tzinfo=timezone.utc)
+        if isinstance(t, datetime):
+            return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
         try:
-            logging.info(f"正在获取气象预警信息... (尝试 {attempt + 1}/{API_CONFIG['max_retries']})")
-            response = requests.get(url, params=params, headers=headers, timeout=API_CONFIG["timeout"])
-
-            # 特殊处理404错误（城市不存在）
-            if response.status_code == 404:
-                logging.warning(f"城市 {city} 未找到（404），跳过该城市")
-                return None
-
-            response.raise_for_status()
-            data = response.json()
-
-            # 检查API返回的错误
-            if 'code' in data and data['code'] != '200':
-                error_msg = data.get('msg', 'API返回错误')
-                logging.error(f"API错误: {error_msg} (代码: {data['code']})")
-                if data['code'] == '401':
-                    logging.error("API Key无效，请检查配置")
-                    sys.exit(1)
-                return None
-
-            logging.info("成功获取预警数据")
-            return data
-
-        except requests.exceptions.Timeout:
-            logging.warning(f"请求超时 (尝试 {attempt + 1}/{API_CONFIG['max_retries']})")
-            if attempt < API_CONFIG["max_retries"] - 1:
-                time.sleep(API_CONFIG["initial_delay"])
-        except requests.exceptions.HTTPError as e:
-            # 4xx客户端错误（如404）跳过，5xx服务器错误重试
-            if 400 <= e.response.status_code < 500:
-                logging.warning(f"客户端错误 {e.response.status_code}，跳过城市 {city}")
-                return None
-            else:
-                logging.error(f"服务器错误: {e}")
-                if attempt < API_CONFIG["max_retries"] - 1:
-                    time.sleep(API_CONFIG["initial_delay"])
-        except requests.exceptions.RequestException as e:
-            logging.error(f"API请求失败: {e}")
-            if attempt < API_CONFIG["max_retries"] - 1:
-                time.sleep(API_CONFIG["initial_delay"])
-
-    logging.warning(f"城市 {city} 达到最大重试次数，跳过")
+            import pandas as pd
+            return pd.Timestamp(t).to_pydatetime().replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
     return None
 
 
-def extract_alarms(data):
-    """提取预警数据"""
+def fetch_wp_disturbances():
+    """获取西太平洋活跃热带扰动数据，返回 (wp_systems, tcfas, jtwc_update_time)"""
     try:
-        # 和风天气API返回格式：data['warning'] 是一个数组
-        alarms = data.get('warning', [])
-        if not alarms:
-            return None, None
+        import tropycal.realtime as realtime
+    except ImportError:
+        logging.error("tropycal 未安装，请运行: pip install tropycal")
+        sys.exit(1)
 
-        # 城市信息存储在顶级字段中
-        location = {
-            'id': data.get('id', ''),
-            'name': data.get('name', 'Unknown'),
-            'country': data.get('country', 'China'),
-            'adm1': data.get('adm1', ''),
-            'adm2': data.get('adm2', ''),
-            'lat': data.get('lat', ''),
-            'lon': data.get('lon', '')
-        }
+    logging.info("正在从 JTWC 获取西太平洋热带扰动数据...")
 
-        return location, alarms
-    except (KeyError, IndexError) as e:
-        logging.error(f"数据解析失败: {e}")
-        return None, None
+    try:
+        rt = realtime.Realtime(jtwc=True, jtwc_source='jtwc')
+    except Exception as e:
+        logging.warning(f"JTWC 主源获取失败，尝试备用源: {e}")
+        try:
+            rt = realtime.Realtime(jtwc=True, jtwc_source='ucar')
+        except Exception as e2:
+            logging.error(f"备用源也失败: {e2}")
+            return {}, {}, None
 
+    # 过滤西太平洋 (WP) 系统
+    try:
+        active_storms = rt.get_active_storms()
+        wp_systems = {k: v for k, v in active_storms.items() if k.startswith('WP')}
+    except Exception as e:
+        logging.error(f"获取活跃风暴失败: {e}")
+        wp_systems = {}
 
-def get_alert_color(level):
-    """根据预警等级返回对应颜色"""
-    for key in ALERT_LEVEL_COLORS:
-        if key in level:
-            return ALERT_LEVEL_COLORS[key]
-    return '#888888'
+    # 从各系统报文时间中取最新的作为 JTWC 整体更新时间
+    jtwc_update_time = None
+    for storm in wp_systems.values():
+        t = get_storm_report_time(storm)
+        if t and (jtwc_update_time is None or t > jtwc_update_time):
+            jtwc_update_time = t
+
+    # 获取 TCFA 信息
+    tcfas = {}
+    try:
+        tcfa_list = rt.get_tcfas()
+        for tcf in tcfa_list:
+            invest_id = tcf.get('invest_id', '')
+            if invest_id.startswith('WP'):
+                tcfas[invest_id] = tcf
+    except Exception as e:
+        logging.warning(f"获取 TCFA 数据失败（可能当前无 TCFA）: {e}")
+
+    logging.info(f"找到 {len(wp_systems)} 个西太平洋活跃系统，{len(tcfas)} 个 TCFA")
+    if jtwc_update_time:
+        logging.info(f"JTWC 最新报文时间: {jtwc_update_time.strftime('%Y-%m-%d %H:%M UTC')}")
+    return wp_systems, tcfas, jtwc_update_time
 
 
 def gen_feishu_sign(secret):
-    """
-    生成飞书机器人签名
-
-    参数:
-        secret: 飞书机器人的签名密钥
-
-    返回:
-        (timestamp, sign): 时间戳和签名字符串
-    """
-    # 获取当前时间戳
+    """生成飞书机器人签名"""
     timestamp = str(int(time.time()))
-
-    # 拼接字符串: timestamp + "\n" + secret
     string_to_sign = '{}\n{}'.format(timestamp, secret)
-
-    # 使用HmacSHA256算法计算签名
     hmac_code = hmac.new(
         string_to_sign.encode("utf-8"),
         digestmod=hashlib.sha256
     ).digest()
-
-    # 对结果进行base64编码
     sign = base64.b64encode(hmac_code).decode('utf-8')
-
     return timestamp, sign
 
 
-def filter_alarms_by_type(alarms, alert_types):
-    """
-    根据预警类型过滤预警信息
-    只保留指定类型的预警（台风、雪、寒潮、冰雹、大雾）
-    """
-    if not alert_types:
-        return alarms  # 如果没有指定过滤类型，返回所有预警
+def render_html(wp_systems, tcfas, jtwc_update_time=None, output_path='index.html'):
+    """生成热带扰动监控 HTML 报告"""
+    now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    jtwc_time_str = (jtwc_update_time.strftime('%Y-%m-%d %H:%M UTC')
+                     if jtwc_update_time else '暂无数据')
+    tcfa_count = len(tcfas)
+    invest_count = sum(1 for s in wp_systems.values() if getattr(s, 'type', '').lower() == 'invest')
+    active_count = len(wp_systems) - invest_count
 
-    filtered_alarms = []
-    for alarm in alarms:
-        alarm_type = alarm.get('type', '')
-        # 检查预警类型是否包含任何一个需要监控的关键词
-        if any(keyword in alarm_type for keyword in alert_types):
-            filtered_alarms.append(alarm)
-        else:
-            logging.info(f"过滤掉不相关的预警: {alarm_type} - {alarm.get('title', '')}")
+    # 构建并排序系统列表
+    type_order = {'supertyphoon': 0, 'typhoon': 1, 'tropical storm': 2,
+                  'tropical depression': 3, 'invest': 4}
+    systems_data = []
+    for storm_id, storm in wp_systems.items():
+        type_raw = getattr(storm, 'type', '') or ''
+        lat = getattr(storm, 'lat', None)
+        lon = getattr(storm, 'lon', None)
+        systems_data.append({
+            'id': storm_id,
+            'type_raw': type_raw,
+            'type_label': get_storm_type_label(type_raw),
+            'lat': lat,
+            'lon': lon,
+            'wind': getattr(storm, 'wind', None),
+            'pressure': getattr(storm, 'pressure', None),
+            'movement_dir': getattr(storm, 'movement_dir', None),
+            'movement_speed': getattr(storm, 'movement_speed', None),
+            'has_tcfa': storm_id in tcfas,
+            'tcfa': tcfas.get(storm_id, {}),
+            'report_time': get_storm_report_time(storm),
+        })
+    systems_data.sort(key=lambda x: type_order.get(x['type_raw'].lower(), 99))
 
-    return filtered_alarms
+    # CSS 样式映射
+    card_classes = {
+        'supertyphoon': ('supertyphoon', '#FF4444'),
+        'typhoon': ('typhoon', '#FF8800'),
+        'tropical storm': ('ts', '#FFCC00'),
+        'tropical depression': ('td', '#48bb78'),
+        'invest': ('invest', '#4488FF'),
+    }
 
+    # 生成风暴卡片 HTML
+    cards_html = ''
+    for s in systems_data:
+        type_key = s['type_raw'].lower()
+        card_cls, border_color = card_classes.get(type_key, ('invest', '#4488FF'))
 
-def deduplicate_alarms_by_type(alarms):
-    """
-    对同一类型的预警去重，只保留更新时间最新的那一条
-    注意：相同类型不同等级的预警（如"大雾-黄色"和"大雾-橙色"）会被去重，只保留最新的一条
+        lat_str = f"北纬 {s['lat']:.1f}°" if s['lat'] is not None else 'N/A'
+        lon_str = f"东经 {s['lon']:.1f}°" if s['lon'] is not None else 'N/A'
+        wind_str = f"{s['wind']} 节" if s['wind'] is not None else 'N/A'
+        pres_str = f"{s['pressure']} hPa" if s['pressure'] is not None else 'N/A'
+        move_str = (f"{s['movement_dir']}° / {s['movement_speed']} 节"
+                    if s['movement_dir'] is not None else 'N/A')
+        rpt_str = (s['report_time'].strftime('%m-%d %H:%MZ')
+                   if s['report_time'] else 'N/A')
 
-    参数:
-        alarms: 预警列表
+        tcfa_badge = '<span class="badge badge-tcfa">TCFA</span>' if s['has_tcfa'] else ''
+        tcfa_alert = ''
+        if s['has_tcfa']:
+            tcf = s['tcfa']
+            dev_prob = tcf.get('development_probability', 'N/A')
+            issue_time = tcf.get('issue_time', 'N/A')
+            tcfa_alert = (
+                f'<div class="tcfa-alert">'
+                f'⚠️ JTWC 已发布热带气旋形成警报 (TCFA) — '
+                f'发展概率：{dev_prob}，发布时间：{issue_time}'
+                f'</div>'
+            )
 
-    返回:
-        去重后的预警列表（每种类型只保留最新的一条，不区分等级）
-    """
-    if not alarms:
-        return alarms
+        cards_html += f'''
+        <div class="storm-card {card_cls}" style="border-left-color:{border_color}">
+            <div class="storm-header">
+                <div class="storm-id">{s["id"]}</div>
+                <div class="badge-row">
+                    <span class="badge" style="background:{border_color};{'color:#333' if type_key=='tropical storm' else ''}">{s["type_label"]}</span>
+                    {tcfa_badge}
+                </div>
+            </div>
+            <div class="storm-info">
+                <div class="info-item"><div class="info-label">位置</div><div class="info-value">{lat_str}, {lon_str}</div></div>
+                <div class="info-item"><div class="info-label">最大风速</div><div class="info-value">{wind_str}</div></div>
+                <div class="info-item"><div class="info-label">中心气压</div><div class="info-value">{pres_str}</div></div>
+                <div class="info-item"><div class="info-label">移动方向/速度</div><div class="info-value">{move_str}</div></div>
+                <div class="info-item"><div class="info-label">📡 报文时间 (UTC)</div><div class="info-value">{rpt_str}</div></div>
+            </div>
+            {tcfa_alert}
+        </div>'''
 
-    # 按预警类型分组，保留每种类型最新的一条（不区分等级）
-    alarm_dict = {}
+    no_systems_html = ''
+    if not wp_systems:
+        no_systems_html = '''
+        <div class="no-systems">
+            <div class="icon">🌤️</div>
+            <h2>西太平洋目前无活跃热带系统</h2>
+            <p>JTWC 当前未发现活跃的热带扰动或热带气旋</p>
+        </div>'''
 
-    for alarm in alarms:
-        alarm_type = alarm.get('type', '未知')
-        alarm_level = alarm.get('severity', '未知')
-        # 只使用"类型"作为key，不区分等级
-        key = alarm_type
+    html = f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>西太平洋热带扰动监控</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }}
+        .container {{ max-width: 900px; margin: 0 auto; }}
+        .header {{
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }}
+        .header h1 {{ font-size: 2rem; color: #1a1a2e; margin-bottom: 8px; }}
+        .header .subtitle {{ color: #718096; font-size: 0.95rem; }}
+        .stats-bar {{
+            background: white;
+            border-radius: 12px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            font-size: 0.9rem;
+            color: #555;
+        }}
+        .stat {{ display: flex; align-items: center; gap: 5px; }}
+        .stat strong {{ color: #1a1a2e; }}
+        .no-systems {{
+            background: white;
+            border-radius: 16px;
+            padding: 60px 30px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }}
+        .no-systems .icon {{ font-size: 4rem; margin-bottom: 20px; }}
+        .no-systems h2 {{ font-size: 1.6rem; color: #48bb78; margin-bottom: 10px; }}
+        .no-systems p {{ color: #718096; }}
+        .storm-card {{
+            background: white;
+            border-radius: 16px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            border-left: 6px solid;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        .storm-card:hover {{ transform: translateY(-3px); box-shadow: 0 14px 36px rgba(0,0,0,0.25); }}
+        .storm-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .storm-id {{ font-size: 1.4rem; font-weight: bold; color: #1a1a2e; }}
+        .badge-row {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+        .badge {{
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            color: white;
+        }}
+        .badge-tcfa {{ background: #cc0000; }}
+        .storm-info {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }}
+        .info-item {{ background: #f7fafc; border-radius: 8px; padding: 10px 14px; }}
+        .info-label {{ font-size: 0.75rem; color: #999; margin-bottom: 3px; }}
+        .info-value {{ font-size: 1rem; font-weight: 600; color: #2d3748; }}
+        .tcfa-alert {{
+            background: #fff5f5;
+            border: 1px solid #fc8181;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-top: 14px;
+            font-size: 0.9rem;
+            color: #c53030;
+        }}
+        .footer {{
+            text-align: center;
+            margin-top: 30px;
+            padding: 20px;
+            color: rgba(255,255,255,0.6);
+            font-size: 0.85rem;
+        }}
+        @media (max-width: 600px) {{
+            .header h1 {{ font-size: 1.5rem; }}
+            .storm-card {{ padding: 18px; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌀 西太平洋热带扰动监控</h1>
+            <div class="subtitle">数据来源：JTWC（美国联合台风警报中心）via tropycal · 监控范围：西北太平洋（WP）</div>
+        </div>
+        <div class="stats-bar">
+            <div class="stat">🕒 脚本运行：<strong>{now_str}</strong></div>
+            <div class="stat">📡 JTWC报文：<strong>{jtwc_time_str}</strong></div>
+            <div class="stat">🌀 活跃系统：<strong>{len(wp_systems)} 个</strong></div>
+            <div class="stat">🔴 热带气旋：<strong>{active_count} 个</strong></div>
+            <div class="stat">🔵 热带扰动：<strong>{invest_count} 个</strong></div>
+            <div class="stat">⚠️ TCFA：<strong>{tcfa_count} 个</strong></div>
+        </div>
+        {no_systems_html}
+        {cards_html}
+        <div class="footer">
+            数据来源：JTWC via tropycal | 仅供参考，请以官方发布为准
+        </div>
+    </div>
+</body>
+</html>'''
 
-        # 获取预警的更新时间 (和风天气使用 pubTime)
-        pub_time = alarm.get('pubTime', '')
-
-        # 如果该类型预警不存在，或者当前预警更新时间更晚，则更新
-        if key not in alarm_dict:
-            alarm_dict[key] = alarm
-            logging.info(f"  保留预警: {key} ({alarm_level}) - 更新时间: {pub_time}")
-        else:
-            existing_pub_time = alarm_dict[key].get('pubTime', '')
-            existing_level = alarm_dict[key].get('severity', '未知')
-            # 比较更新时间，保留最新的
-            if pub_time > existing_pub_time:
-                logging.info(f"  更新预警: {key} ({existing_level} -> {alarm_level}) - 新时间: {pub_time} > 旧时间: {existing_pub_time}")
-                alarm_dict[key] = alarm
-            else:
-                logging.info(f"  过滤重复预警: {key} ({alarm_level}) - 时间: {pub_time} <= {existing_pub_time}")
-
-    # 返回去重后的预警列表
-    deduplicated_alarms = list(alarm_dict.values())
-
-    if len(deduplicated_alarms) < len(alarms):
-        logging.info(f"  去重完成: {len(alarms)} 条 -> {len(deduplicated_alarms)} 条（移除 {len(alarms) - len(deduplicated_alarms)} 条重复预警）")
-
-    return deduplicated_alarms
-
-
-def render_html(cities_data, template_path='template.html', output_path='index.html'):
-    """使用 Jinja2 模板渲染 HTML（支持多城市，按省份分组）"""
-
-    # 读取模板文件
-    try:
-        with open(template_path, 'r', encoding='utf-8') as f:
-            template_content = f.read()
-    except FileNotFoundError:
-        logging.error(f"错误：模板文件 {template_path} 不存在")
-        sys.exit(1)
-
-    # 为每个城市的每个预警添加颜色信息
-    for city_data in cities_data:
-        for alarm in city_data['alarms']:
-            alarm['color'] = get_alert_color(alarm.get('level', ''))
-
-    # 按省份分组
-    provinces_data = group_cities_by_province(cities_data)
-
-    # 统计总预警数
-    total_alarms = sum(len(city_data['alarms']) for city_data in cities_data)
-
-    # 渲染模板
-    template = Template(template_content)
-    html_content = template.render(
-        cities_data=cities_data,
-        provinces_data=provinces_data,
-        update_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        has_alarms=total_alarms > 0,
-        total_alarms=total_alarms
-    )
-
-    # 写入文件
     with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(html_content)
-
+        f.write(html)
     logging.info(f"HTML 报告已生成: {output_path}")
 
 
-def build_feishu_card(cities_data, report_url):
-    """构建飞书消息卡片 JSON payload（支持多城市，按省份分组）"""
+def build_feishu_card(wp_systems, tcfas, report_url, jtwc_update_time=None):
+    """构建飞书消息卡片"""
+    tcfa_count = len(tcfas)
+    invest_count = sum(1 for s in wp_systems.values()
+                       if getattr(s, 'type', '').lower() == 'invest')
+    active_count = len(wp_systems) - invest_count
 
-    # 按省份分组
-    provinces_data = group_cities_by_province(cities_data)
-
-    # 统计总预警数和有预警的省份
-    total_alarms = sum(province_data['total_alarms'] for province_data in provinces_data.values())
-    provinces_with_alarms = {k: v for k, v in provinces_data.items() if v['total_alarms'] > 0}
-
-    has_alarms = total_alarms > 0
-
-    # 预警等级 emoji 映射（和风天气使用 severity）
-    level_emoji = {
-        '极端': '🔴',
-        '严重': '🟠',
-        '较重': '🟡',
-        '轻微': '🔵',
-    }
-
-    # 根据是否有预警，设置不同的卡片样式
-    if has_alarms:
-        header_title = "⚠️ 多地区异常天气预警"
-        header_template = "red"
-
-        # 列出有预警的省份
-        province_list = '、'.join(list(provinces_with_alarms.keys())[:8])  # 最多显示8个省份
-        if len(provinces_with_alarms) > 8:
-            province_list += f" 等 {len(provinces_with_alarms)} 个省份"
-
-        status_text = f"**预警省份：** {province_list}\n**预警总数：** {total_alarms} 条"
-    else:
-        header_title = "✅ 所有监控区域天气正常"
+    if not wp_systems:
+        header_title = "✅ 西太平洋无活跃热带系统"
         header_template = "green"
-        status_text = f"**监控城市：** {len(cities_data)} 个\n**预警数量：** 0 条\n\n☀️ 当前所有区域无气象预警"
+    elif tcfa_count > 0:
+        header_title = f"⚠️ 西太平洋热带扰动警报 — {tcfa_count} 个 TCFA"
+        header_template = "red"
+    else:
+        header_title = f"🌀 西太平洋热带扰动监控 — {len(wp_systems)} 个活跃系统"
+        header_template = "orange"
 
-    # 构建预警列表内容（按省份分组，显示所有预警）
-    alarm_elements = []
-    if has_alarms:
-        # 按省份展示所有预警
-        for province_name, province_data in provinces_with_alarms.items():
-            # 添加省份标题
-            alarm_elements.append({
-                "tag": "hr"
-            })
-            alarm_elements.append({
+    jtwc_time_str = (jtwc_update_time.strftime('%Y-%m-%d %H:%M UTC')
+                     if jtwc_update_time else '暂无')
+    status_text = (
+        f"**活跃系统：** {len(wp_systems)} 个\n"
+        f"**热带气旋：** {active_count} 个\n"
+        f"**热带扰动：** {invest_count} 个\n"
+        f"**TCFA 警报：** {tcfa_count} 个\n"
+        f"**📡 JTWC 报文时间：** {jtwc_time_str}"
+    )
+
+    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": status_text}}]
+
+    if wp_systems:
+        elements.append({"tag": "hr"})
+        for storm_id, storm in wp_systems.items():
+            type_raw = getattr(storm, 'type', '') or ''
+            lat = getattr(storm, 'lat', None)
+            lon = getattr(storm, 'lon', None)
+            wind = getattr(storm, 'wind', None)
+            pressure = getattr(storm, 'pressure', None)
+            has_tcfa = storm_id in tcfas
+
+            type_label = get_storm_type_label(type_raw)
+            lat_str = f"北纬{lat:.1f}°" if lat is not None else 'N/A'
+            lon_str = f"东经{lon:.1f}°" if lon is not None else 'N/A'
+            wind_str = f"{wind}节" if wind is not None else 'N/A'
+            pres_str = f"{pressure}hPa" if pressure is not None else 'N/A'
+            rpt_time = get_storm_report_time(storm)
+            rpt_str = rpt_time.strftime('%m-%d %H:%MZ') if rpt_time else 'N/A'
+            tcfa_tag = "【⚠️TCFA】" if has_tcfa else ""
+
+            elements.append({
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"**📍 {province_name}**（{province_data['total_alarms']} 条预警）"
+                    "content": (
+                        f"**{storm_id}** {tcfa_tag}| {type_label}\n"
+                        f"位置：{lat_str}, {lon_str} | 风速：{wind_str} | 气压：{pres_str} | 📡 报文：{rpt_str}"
+                    )
                 }
             })
 
-            # 显示该省份的所有城市预警
-            for city_data in province_data['cities']:
-                if city_data['alarms']:
-                    for alarm in city_data['alarms']:
-                        alarm_type = alarm.get('type', '未知')
-                        alarm_severity = alarm.get('severity', '未知')
-                        city_name = city_data['name']
+    elements.append({"tag": "hr"})
 
-                        # 获取预警等级的 emoji
-                        emoji = '⚪'
-                        for key, val in level_emoji.items():
-                            if key in alarm_severity:
-                                emoji = val
-                                break
+    if report_url:
+        elements.append({
+            "tag": "action",
+            "actions": [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "📋 查看完整监控报告"},
+                "type": "primary",
+                "url": report_url
+            }]
+        })
 
-                        # 添加预警信息
-                        alarm_elements.append({
-                            "tag": "div",
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"  {emoji} **{alarm_type} - {alarm_severity}** | {city_name}"
-                            }
-                        })
+    elements.append({
+        "tag": "note",
+        "elements": [{
+            "tag": "plain_text",
+            "content": (
+                f"更新时间：{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC"
+                " | 数据源：JTWC via tropycal"
+            )
+        }]
+    })
 
-    # 构建完整卡片
-    card = {
+    return {
         "msg_type": "interactive",
         "card": {
             "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": header_title
-                },
+                "title": {"tag": "plain_text", "content": header_title},
                 "template": header_template
             },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {
-                        "tag": "lark_md",
-                        "content": status_text
-                    }
-                }
-            ] + alarm_elements + [
-                {
-                    "tag": "hr"
-                },
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {
-                                "tag": "plain_text",
-                                "content": "📋 查看完整预警详情"
-                            },
-                            "type": "primary",
-                            "url": report_url
-                        }
-                    ]
-                },
-                {
-                    "tag": "note",
-                    "elements": [
-                        {
-                            "tag": "plain_text",
-                            "content": f"更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 数据源：和风天气"
-                        }
-                    ]
-                }
-            ]
+            "elements": elements
         }
     }
 
-    return card
 
-
-def send_feishu_notification(webhook_url, cities_data, report_url, secret=''):
-    """
-    发送飞书通知（支持多城市和签名校验）
-
-    参数:
-        webhook_url: 飞书webhook地址
-        cities_data: 城市数据列表
-        report_url: 报告URL
-        secret: 飞书签名密钥（可选，如果配置了则启用签名校验）
-    """
+def send_feishu_notification(webhook_url, wp_systems, tcfas, report_url, secret='', jtwc_update_time=None):
+    """发送飞书通知"""
     if not webhook_url:
         logging.warning("未配置飞书 Webhook，跳过通知")
         return False
 
     try:
-        card = build_feishu_card(cities_data, report_url)
+        card = build_feishu_card(wp_systems, tcfas, report_url, jtwc_update_time)
 
-        # 如果配置了签名密钥，添加签名信息
         if secret:
             timestamp, sign = gen_feishu_sign(secret)
             card['timestamp'] = timestamp
             card['sign'] = sign
-            logging.info(f"已启用飞书签名校验 (timestamp: {timestamp})")
+            logging.info("已启用飞书签名校验")
         else:
             logging.warning("未配置飞书签名密钥，建议配置以提高安全性")
 
         logging.info("正在发送飞书通知...")
-
         response = requests.post(webhook_url, json=card, timeout=10)
         response.raise_for_status()
 
@@ -475,108 +491,38 @@ def send_feishu_notification(webhook_url, cities_data, report_url, secret=''):
         else:
             logging.error(f"飞书通知发送失败: {result}")
             return False
-
     except Exception as e:
         logging.error(f"飞书通知发送异常: {e}")
         return False
 
 
 def main():
-    """主函数（支持多城市监控和预警过滤）"""
     logging.info("=" * 50)
-    logging.info("气象预警脚本 - 多城市监控版")
-    logging.info("=" * 50)
-
-    # 加载配置
-    api_key, cities, alert_types, feishu_webhook, feishu_secret, report_url = load_config()
-    logging.info(f"监控城市数量: {len(cities)}")
-    logging.info(f"城市列表: {', '.join(cities[:10])}{'...' if len(cities) > 10 else ''}")
-    logging.info(f"监控预警类型: {', '.join(alert_types) if alert_types else '全部'}")
-
-    # 存储所有城市的预警数据
-    cities_data = []
-    total_alarms_before_filter = 0
-    total_alarms_after_filter = 0
-    success_count = 0
-    failed_count = 0
-
-    # 逐个城市查询预警
-    for idx, city in enumerate(cities, 1):
-        logging.info(f"\n正在查询城市: {city} ({idx}/{len(cities)})")
-
-        # 获取预警数据
-        data = get_weather_alarms(api_key, city)
-
-        if data is None:
-            logging.warning(f"城市 {city} 查询失败，跳过")
-            failed_count += 1
-            # 添加延迟避免API超载
-            time.sleep(0.8)
-            continue
-
-        # 提取预警信息
-        location, alarms = extract_alarms(data)
-
-        if location is None:
-            logging.warning(f"城市 {city} 数据解析失败，跳过")
-            failed_count += 1
-            # 添加延迟避免API超载
-            time.sleep(0.8)
-            continue
-
-        city_name = location.get('name', city)
-        total_alarms_before_filter += len(alarms)
-        success_count += 1
-
-        # 过滤预警类型
-        if alert_types and alarms:
-            filtered_alarms = filter_alarms_by_type(alarms, alert_types)
-            logging.info(f"  原始预警数: {len(alarms)}, 过滤后: {len(filtered_alarms)}")
-            alarms = filtered_alarms
-
-        # 对同类型预警去重，只保留最新的一条
-        if alarms:
-            alarms = deduplicate_alarms_by_type(alarms)
-
-        total_alarms_after_filter += len(alarms)
-
-        # 存储城市数据
-        cities_data.append({
-            'name': city_name,
-            'location': location,
-            'alarms': alarms
-        })
-
-        if alarms:
-            logging.info(f"  ✓ {city_name}: {len(alarms)} 条预警")
-            for alarm in alarms:
-                logging.info(f"    - {alarm.get('type', '未知')} | {alarm.get('level', '未知')}")
-        else:
-            logging.info(f"  ✓ {city_name}: 无预警")
-
-        # 添加延迟避免API超载（每个城市查询后等待0.8秒）
-        time.sleep(0.8)
-
-    # 汇总统计
-    logging.info("\n" + "=" * 50)
-    logging.info(f"查询完成！")
-    logging.info(f"总城市数: {len(cities)} 个")
-    logging.info(f"查询成功: {success_count} 个")
-    logging.info(f"查询失败: {failed_count} 个")
-    logging.info(f"总预警数（过滤前）: {total_alarms_before_filter} 条")
-    logging.info(f"总预警数（过滤后）: {total_alarms_after_filter} 条")
-    logging.info(f"过滤掉: {total_alarms_before_filter - total_alarms_after_filter} 条不相关预警")
+    logging.info("西太平洋热带扰动监控 — JTWC via tropycal")
     logging.info("=" * 50)
 
-    # 生成 HTML 报告
-    logging.info("\n正在生成 HTML 报告...")
-    render_html(cities_data)
+    feishu_webhook, feishu_secret, report_url = load_config()
 
-    # 发送飞书通知（无论是否有预警都发送）
-    logging.info("\n准备发送飞书通知...")
-    send_feishu_notification(feishu_webhook, cities_data, report_url, feishu_secret)
+    wp_systems, tcfas, jtwc_update_time = fetch_wp_disturbances()
 
-    logging.info("\n完成！")
+    logging.info(f"西太平洋活跃系统: {len(wp_systems)} 个")
+    for storm_id, storm in wp_systems.items():
+        type_raw = getattr(storm, 'type', '')
+        lat = getattr(storm, 'lat', None)
+        lon = getattr(storm, 'lon', None)
+        wind = getattr(storm, 'wind', None)
+        tcfa_tag = '【TCFA】' if storm_id in tcfas else ''
+        logging.info(
+            f"  {storm_id}: {type_raw}, 位置({lat}, {lon}), 风速 {wind} 节 {tcfa_tag}"
+        )
+
+    logging.info("正在生成 HTML 报告...")
+    render_html(wp_systems, tcfas, jtwc_update_time)
+
+    logging.info("准备发送飞书通知...")
+    send_feishu_notification(feishu_webhook, wp_systems, tcfas, report_url, feishu_secret, jtwc_update_time)
+
+    logging.info("完成！")
 
 
 if __name__ == '__main__':
