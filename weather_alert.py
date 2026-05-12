@@ -73,9 +73,9 @@ def fetch_wp_disturbances():
     """获取西太平洋活跃热带扰动数据，返回 (wp_systems, tcfas, jtwc_update_time)"""
     try:
         import tropycal.realtime as realtime
-    except ImportError:
-        logging.error("tropycal 未安装，请运行: pip install tropycal")
-        sys.exit(1)
+    except Exception as e:
+        logging.error(f"tropycal 导入失败（跳过数据获取，生成空报告）: {e}")
+        return {}, {}, None
 
     logging.info("正在从 JTWC 获取西太平洋热带扰动数据...")
 
@@ -526,4 +526,13 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        logging.error(f"脚本异常退出: {e}", exc_info=True)
+        # 即使出错也尝试生成一个空报告，保证 GitHub Pages 有内容
+        try:
+            render_html({}, {}, None)
+        except Exception:
+            pass
+        raise

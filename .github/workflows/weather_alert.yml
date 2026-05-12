@@ -1,26 +1,21 @@
 name: Tropical Disturbance Monitor
 
 on:
-  # 每天 UTC 0:00 (北京时间 8:00) 和 UTC 12:00 (北京时间 20:00) 各运行一次
   schedule:
-    - cron: '0 0 * * *'
-    - cron: '0 12 * * *'
+    - cron: '0 0 * * *'   # 北京时间 8:00
+    - cron: '0 12 * * *'  # 北京时间 20:00
 
-  # 允许手动触发
   workflow_dispatch:
 
-  # 代码推送到 main 时触发
   push:
     branches:
       - main
 
-# 设置权限以便部署到 GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# 并发控制：同一时间只运行一个部署
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -42,12 +37,29 @@ jobs:
       - name: 安装系统依赖
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y libgeos-dev libproj-dev
+          sudo apt-get install -y libgeos-dev libproj-dev proj-data proj-bin
 
       - name: 安装 Python 依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: 诊断 tropycal 导入
+        run: |
+          python -c "
+          import sys
+          print('Python:', sys.version)
+          try:
+              import tropycal
+              print('tropycal version:', tropycal.__version__)
+          except Exception as e:
+              print('tropycal import ERROR:', e)
+          try:
+              import tropycal.realtime
+              print('tropycal.realtime: OK')
+          except Exception as e:
+              print('tropycal.realtime import ERROR:', e)
+          "
 
       - name: 创建 .env 配置文件
         run: |
@@ -61,15 +73,16 @@ jobs:
           echo "脚本运行完成"
 
       - name: 上传 HTML 报告为 artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: typhoon-report
           path: index.html
 
-  # 部署到 GitHub Pages
   deploy:
     needs: monitor
     runs-on: ubuntu-latest
+    if: always()
 
     environment:
       name: github-pages
