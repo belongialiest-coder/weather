@@ -41,6 +41,7 @@ def get_storm_type_label(storm_type):
     """获取热带气旋类型中文标签"""
     type_map = {
         'invest': '热带扰动',
+        # NHC 完整名称
         'tropical depression': '热带低压',
         'tropical storm': '热带风暴',
         'typhoon': '台风',
@@ -48,6 +49,20 @@ def get_storm_type_label(storm_type):
         'super typhoon': '超强台风',
         'subtropical storm': '亚热带风暴',
         'subtropical depression': '亚热带低压',
+        # UCAR/ATCF 短代码（tropycal UCAR 源返回缩写）
+        'td': '热带低压',
+        'ts': '热带风暴',
+        'ty': '台风',
+        'st': '超强台风',
+        'sd': '亚热带低压',
+        'ss': '亚热带风暴',
+        'db': '扰动',
+        'ex': '温带气旋',
+        'lo': '低气压',
+        'wv': '热带波',
+        'hu': '飓风',
+        # ATCF invest 类型代码
+        'xx': '热带扰动',
     }
     key = (storm_type or '').lower()
     return type_map.get(key, storm_type or '未知')
