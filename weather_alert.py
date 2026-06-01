@@ -7,6 +7,7 @@
 
 import os
 import sys
+import re
 import logging
 import time
 import hmac
@@ -44,6 +45,7 @@ def get_storm_type_label(storm_type):
         'tropical storm': '热带风暴',
         'typhoon': '台风',
         'supertyphoon': '超强台风',
+        'super typhoon': '超强台风',
         'subtropical storm': '亚热带风暴',
         'subtropical depression': '亚热带低压',
     }
@@ -51,12 +53,37 @@ def get_storm_type_label(storm_type):
     return type_map.get(key, storm_type or '未知')
 
 
+def _get_storm_latest_attr(storm, attr_name, default=None):
+    """从 storm 对象获取最新属性值，兼容 list/array 和标量类型"""
+    val = getattr(storm, attr_name, default)
+    if val is default or val is None:
+        return default
+    if hasattr(val, '__len__') and hasattr(val, '__getitem__') and not isinstance(val, str):
+        try:
+            if len(val) > 0:
+                return val[-1]
+        except (TypeError, IndexError):
+            pass
+    return val
+
+
+def _get_storm_type(storm):
+    """从 storm 对象获取最新类型，兼容 list 和标量"""
+    types = getattr(storm, 'type', None)
+    if types is None:
+        return ''
+    if isinstance(types, str):
+        return types
+    if hasattr(types, '__len__') and hasattr(types, '__getitem__') and len(types) > 0:
+        return types[-1] or ''
+    return ''
+
+
 def get_storm_report_time(storm):
     """从 storm 对象中提取最新报文时间，返回 datetime 或 None"""
     times = getattr(storm, 'time', None)
     if times and len(times) > 0:
         t = times[-1]
-        # tropycal 返回的可能是 numpy.datetime64 或 datetime
         if hasattr(t, 'to_pydatetime'):
             return t.to_pydatetime().replace(tzinfo=timezone.utc)
         if isinstance(t, datetime):
@@ -79,23 +106,39 @@ def fetch_wp_disturbances():
 
     logging.info("正在从 JTWC 获取西太平洋热带扰动数据...")
 
-    try:
-        rt = realtime.Realtime(jtwc=True, jtwc_source='jtwc')
-    except Exception as e:
-        logging.warning(f"JTWC 主源获取失败，尝试备用源: {e}")
+    # 尝试多个 JTWC 数据源
+    rt = None
+    for source in ['jtwc', 'ucar']:
         try:
-            rt = realtime.Realtime(jtwc=True, jtwc_source='ucar')
-        except Exception as e2:
-            logging.error(f"备用源也失败: {e2}")
-            return {}, {}, None
+            rt = realtime.Realtime(jtwc=True, jtwc_source=source)
+            logging.info(f"JTWC 数据源 '{source}' 连接成功")
+            break
+        except Exception as e:
+            logging.warning(f"JTWC 数据源 '{source}' 连接失败: {e}")
 
-    # 过滤西太平洋 (WP) 系统
+    if rt is None:
+        logging.error("所有 JTWC 数据源均连接失败")
+        return {}, {}, None
+
+    # 使用 list_active_storms() 获取活跃系统 ID 列表（tropycal v1.0+ API）
     try:
-        active_storms = rt.get_active_storms()
-        wp_systems = {k: v for k, v in active_storms.items() if k.startswith('WP')}
+        storm_ids = rt.list_active_storms()
+        logging.info(f"tropycal 返回 {len(storm_ids)} 个活跃系统: {storm_ids}")
     except Exception as e:
-        logging.error(f"获取活跃风暴失败: {e}")
-        wp_systems = {}
+        logging.error(f"获取活跃风暴列表失败: {e}")
+        return {}, {}, None
+
+    # 过滤西太平洋 (WP) 系统，同时兼容 NHC 格式的 invest ID（如 90W）
+    wp_systems = {}
+    for sid in storm_ids:
+        if sid.startswith('WP') or re.match(r'^\d{2}W$', sid):
+            try:
+                storm = rt.get_storm(sid)
+                wp_systems[sid] = storm
+            except Exception as e:
+                logging.warning(f"获取系统 {sid} 详情失败: {e}")
+
+    logging.info(f"过滤后西太平洋系统: {len(wp_systems)} 个")
 
     # 从各系统报文时间中取最新的作为 JTWC 整体更新时间
     jtwc_update_time = None
@@ -104,16 +147,19 @@ def fetch_wp_disturbances():
         if t and (jtwc_update_time is None or t > jtwc_update_time):
             jtwc_update_time = t
 
-    # 获取 TCFA 信息
+    # 获取 TCFA 信息（兼容不同 tropycal 版本）
     tcfas = {}
     try:
         tcfa_list = rt.get_tcfas()
-        for tcf in tcfa_list:
-            invest_id = tcf.get('invest_id', '')
-            if invest_id.startswith('WP'):
-                tcfas[invest_id] = tcf
+        if tcfa_list:
+            for tcf in tcfa_list:
+                invest_id = tcf.get('invest_id', '')
+                if invest_id.startswith('WP') or re.match(r'^\d{2}W$', invest_id):
+                    tcfas[invest_id] = tcf
+    except AttributeError:
+        logging.info("当前 tropycal 版本不支持 get_tcfas()，跳过 TCFA 检测")
     except Exception as e:
-        logging.warning(f"获取 TCFA 数据失败（可能当前无 TCFA）: {e}")
+        logging.warning(f"获取 TCFA 数据失败: {e}")
 
     logging.info(f"找到 {len(wp_systems)} 个西太平洋活跃系统，{len(tcfas)} 个 TCFA")
     if jtwc_update_time:
@@ -139,27 +185,29 @@ def render_html(wp_systems, tcfas, jtwc_update_time=None, output_path='index.htm
     jtwc_time_str = (jtwc_update_time.strftime('%Y-%m-%d %H:%M UTC')
                      if jtwc_update_time else '暂无数据')
     tcfa_count = len(tcfas)
-    invest_count = sum(1 for s in wp_systems.values() if getattr(s, 'type', '').lower() == 'invest')
+    invest_count = sum(1 for s in wp_systems.values() if getattr(s, 'invest', False))
     active_count = len(wp_systems) - invest_count
 
     # 构建并排序系统列表
-    type_order = {'supertyphoon': 0, 'typhoon': 1, 'tropical storm': 2,
+    type_order = {'supertyphoon': 0, 'super typhoon': 0, 'typhoon': 1, 'tropical storm': 2,
                   'tropical depression': 3, 'invest': 4}
     systems_data = []
     for storm_id, storm in wp_systems.items():
-        type_raw = getattr(storm, 'type', '') or ''
-        lat = getattr(storm, 'lat', None)
-        lon = getattr(storm, 'lon', None)
+        type_raw = _get_storm_type(storm) or ''
+        lat = _get_storm_latest_attr(storm, 'lat')
+        lon = _get_storm_latest_attr(storm, 'lon')
+        vmax = _get_storm_latest_attr(storm, 'vmax')
+        mslp = _get_storm_latest_attr(storm, 'mslp')
         systems_data.append({
             'id': storm_id,
             'type_raw': type_raw,
             'type_label': get_storm_type_label(type_raw),
             'lat': lat,
             'lon': lon,
-            'wind': getattr(storm, 'wind', None),
-            'pressure': getattr(storm, 'pressure', None),
-            'movement_dir': getattr(storm, 'movement_dir', None),
-            'movement_speed': getattr(storm, 'movement_speed', None),
+            'wind': vmax,
+            'pressure': mslp,
+            'movement_dir': None,
+            'movement_speed': None,
             'has_tcfa': storm_id in tcfas,
             'tcfa': tcfas.get(storm_id, {}),
             'report_time': get_storm_report_time(storm),
@@ -372,7 +420,7 @@ def build_feishu_card(wp_systems, tcfas, report_url, jtwc_update_time=None):
     """构建飞书消息卡片"""
     tcfa_count = len(tcfas)
     invest_count = sum(1 for s in wp_systems.values()
-                       if getattr(s, 'type', '').lower() == 'invest')
+                       if getattr(s, 'invest', False))
     active_count = len(wp_systems) - invest_count
 
     if not wp_systems:
@@ -400,11 +448,11 @@ def build_feishu_card(wp_systems, tcfas, report_url, jtwc_update_time=None):
     if wp_systems:
         elements.append({"tag": "hr"})
         for storm_id, storm in wp_systems.items():
-            type_raw = getattr(storm, 'type', '') or ''
-            lat = getattr(storm, 'lat', None)
-            lon = getattr(storm, 'lon', None)
-            wind = getattr(storm, 'wind', None)
-            pressure = getattr(storm, 'pressure', None)
+            type_raw = _get_storm_type(storm) or ''
+            lat = _get_storm_latest_attr(storm, 'lat')
+            lon = _get_storm_latest_attr(storm, 'lon')
+            wind = _get_storm_latest_attr(storm, 'vmax')
+            pressure = _get_storm_latest_attr(storm, 'mslp')
             has_tcfa = storm_id in tcfas
 
             type_label = get_storm_type_label(type_raw)
@@ -507,13 +555,15 @@ def main():
 
     logging.info(f"西太平洋活跃系统: {len(wp_systems)} 个")
     for storm_id, storm in wp_systems.items():
-        type_raw = getattr(storm, 'type', '')
-        lat = getattr(storm, 'lat', None)
-        lon = getattr(storm, 'lon', None)
-        wind = getattr(storm, 'wind', None)
+        type_raw = _get_storm_type(storm) or ''
+        lat = _get_storm_latest_attr(storm, 'lat')
+        lon = _get_storm_latest_attr(storm, 'lon')
+        vmax = _get_storm_latest_attr(storm, 'vmax')
+        is_invest = getattr(storm, 'invest', False)
         tcfa_tag = '【TCFA】' if storm_id in tcfas else ''
+        invest_tag = '【扰动】' if is_invest else ''
         logging.info(
-            f"  {storm_id}: {type_raw}, 位置({lat}, {lon}), 风速 {wind} 节 {tcfa_tag}"
+            f"  {storm_id}: {type_raw} {invest_tag}, 位置({lat}, {lon}), 风速 {vmax} 节 {tcfa_tag}"
         )
 
     logging.info("正在生成 HTML 报告...")
