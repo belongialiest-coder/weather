@@ -82,7 +82,7 @@ def _get_storm_type(storm):
 def get_storm_report_time(storm):
     """从 storm 对象中提取最新报文时间，返回 datetime 或 None"""
     times = getattr(storm, 'time', None)
-    if times and len(times) > 0:
+    if times is not None and len(times) > 0:
         t = times[-1]
         if hasattr(t, 'to_pydatetime'):
             return t.to_pydatetime().replace(tzinfo=timezone.utc)
